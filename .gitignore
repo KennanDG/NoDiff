@@ -1,0 +1,128 @@
+# =========
+# Secrets
+# =========
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+aws-credentials*
+secrets*.json
+
+# =========
+# OS / Editor
+# =========
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.idea/
+*.iml
+
+# =========
+# Python
+# =========
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+.pyre/
+.pytype/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =========
+# Node / Web (if added later)
+# =========
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+out/
+dist/
+coverage/
+
+# =========
+# Logs
+# =========
+*.log
+*logs/
+
+# =========
+# Databases / local state
+# =========
+*.sqlite
+*.sqlite3
+data/
+storage/
+tmp/
+temp/
+.chroma
+
+# =========
+# RAG / embeddings outputs (keep generated artifacts out of git)
+# =========
+embeddings/
+vectorstore/
+chroma/
+faiss_index/
+indexes/
+
+# =========
+# Docker
+# =========
+*.pid
+
+
+# Terraform
+**/.terraform/*
+**/.terraform.lock.hcl  
+infra/envs/dev/.terraform.lock.hcl
+
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+
+# Terraform CLI config files
+.terraformrc
+terraform.rc
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+
+groq_available_models.json
+.ai-agents/
+
+.ai-agents/memory/

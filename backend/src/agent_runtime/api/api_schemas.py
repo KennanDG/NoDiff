@@ -1,0 +1,737 @@
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional, Union, Literal
+from pydantic import BaseModel, Field, field_validator
+
+from agent_runtime.config.constants import (
+    ChatProvider, 
+    AgentKind, 
+    NAME_RE,
+    MAX_SKILL_CHARS,
+    MAX_TOOL_CHARS
+)
+
+
+# Response-boundary markdown formatting.
+#
+# Agent runtimes produce rich graph state that includes progress logs, tool-call
+# traces, and debug artifacts. The final answer is formatted here at the
+# HTTP/WebSocket boundary into a clean, concise markdown string so runtime nodes
+# never need to know about frontend presentation rules.
+
+_MARKDOWN_DEBUG_LINE_RES = (
+    # Decorative separators commonly used to delimit internal log sections.
+    re.compile(r"^\s*[=*_\-]{3,}\s*$"),
+    # Stdlib/uvicorn/agent log-level headers (INFO/DEBUG/TRACE and friends).
+    re.compile(r"^\s*(?:info|debug|trace)\b\s*:", re.IGNORECASE),
+    # Timestamped log lines.
+    re.compile(r"^\s*\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?", re.IGNORECASE),
+    # Tool-call invocation traces emitted by the agent runtime.
+    re.compile(
+        r"^\s*(?:tool[_ ]call|call[_ ]id|calling tool|invoking tool)\b",
+        re.IGNORECASE,
+    ),
+    # Standalone single-line JSON tool-call blobs (also tolerate a trailing
+    # comma/semicolon left behind by streamed log fragments).
+    re.compile(r"^\s*\{.*\}[,;]?\s*$"),
+    re.compile(r"^\s*\[.*\][,;]?\s*$"),
+)
+
+_DEBUG_CONFIG_FENCE_LANGUAGES = {"json", "yaml", "toml", "xml"}
+
+_MARKDOWN_MAX_RESPONSE_CHARS = 30_000
+
+
+def _is_markdown_debug_artifact_line(stripped_line: str) -> bool:
+    """Return True when a line looks like a log/tool-call/debug artifact."""
+    return any(pattern.match(stripped_line) for pattern in _MARKDOWN_DEBUG_LINE_RES)
+
+
+def format_agent_markdown(
+    raw_output: str | None,
+    *,
+    max_chars: int = _MARKDOWN_MAX_RESPONSE_CHARS,
+) -> str | None:
+    """Convert raw agent output into a clean, concise markdown string.
+
+    Applied at the HTTP/WebSocket response boundary and deliberately
+    conservative:
+
+    - Fenced JSON/YAML/TOML/XML dumps (typical tool-call payloads) are dropped.
+    - Lines that look like log headers, timestamps, or tool-call traces are removed.
+    - Content inside real code fences (Python, diffs, etc.) is preserved.
+    - Runs of blank lines are collapsed so the result stays concise.
+
+    Returns ``None`` when there is nothing meaningful to render.
+    """
+    if not isinstance(raw_output, str) or not raw_output.strip():
+        return None
+
+    output_lines: list[str] = []
+    in_code_fence = False
+    skipping_debug_fence = False
+    consecutive_blank_lines = 0
+    json_block_depth = 0
+
+    for raw_line in raw_output.splitlines():
+        stripped_line = raw_line.strip()
+
+        if stripped_line.startswith("```"):
+            if not in_code_fence:
+                in_code_fence = True
+                fence_language = stripped_line[3:].strip().lower()
+                skipping_debug_fence = fence_language in _DEBUG_CONFIG_FENCE_LANGUAGES
+                if skipping_debug_fence:
+                    continue
+                output_lines.append(raw_line)
+            else:
+                was_skipping_debug_fence = skipping_debug_fence
+                in_code_fence = False
+                skipping_debug_fence = False
+                if not was_skipping_debug_fence:
+                    output_lines.append(raw_line)
+            consecutive_blank_lines = 0
+            continue
+
+        if in_code_fence:
+            if not skipping_debug_fence:
+                output_lines.append(raw_line)
+            consecutive_blank_lines = 0
+            continue
+
+        # Skip multi-line JSON object blobs (typical tool-call payloads) that are
+        # not wrapped in a code fence.
+        if json_block_depth > 0:
+            json_block_depth += stripped_line.count("{") - stripped_line.count("}")
+            if json_block_depth <= 0:
+                json_block_depth = 0
+            continue
+
+        if stripped_line.startswith("{"):
+            json_block_depth = stripped_line.count("{") - stripped_line.count("}")
+            if json_block_depth > 0:
+                continue
+
+        if _is_markdown_debug_artifact_line(stripped_line):
+            continue
+
+        if not stripped_line:
+            consecutive_blank_lines += 1
+            if consecutive_blank_lines > 1:
+                continue
+        else:
+            consecutive_blank_lines = 0
+
+        output_lines.append(raw_line)
+
+    if in_code_fence and not skipping_debug_fence:
+        # Keep the markdown well-formed when the agent leaves a fence open.
+        output_lines.append("```")
+
+    formatted = "\n".join(output_lines).strip()
+    if not formatted:
+        return None
+
+    if len(formatted) > max_chars:
+        formatted = f"{formatted[:max_chars].rstrip()}\n\n…(truncated)"
+
+    return formatted
+
+
+
+class HealthResponse(BaseModel):
+    status: str = "ok"
+
+
+
+############################## CODING AGENT ##############################
+class CodingAgentAttachedFile(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    content: str | None = None
+    data_url: str | None = Field(default=None, max_length=8_000_000)
+
+    # Repo-relative path when the file already exists in the repo.
+    # For local uploads, this can stay null.
+    path: str | None = None
+
+    source: Literal["upload", "repo"] = "upload"
+    mime_type: str | None = None
+    size: int | None = Field(default=None, ge=0)
+    truncated: bool | None = False
+
+    
+class CodingAgentRunRequest(BaseModel):
+    request: str
+    repo_root: str
+    workspace_root: str | None = None
+    allow_write: bool = False
+    thread_id: str | None = None
+    memory_user_id: str | None = Field(
+        default=None,
+        max_length=128,
+    )
+
+    memory_namespace: str | None = Field(
+        default=None,
+        max_length=128,
+    )
+    memory_enabled: bool | None = None
+    setup_memory: bool | None = None
+
+    # Divide-and-conquer implementation loop. ``max_iterations`` remains as a
+    # compatibility alias for older frontend/backend builds.
+    max_implementation_iterations: int | None = Field(default=None, ge=1, le=8)
+    max_iterations: int | None = Field(default=None, ge=1, le=8)
+
+    # Optional per-run overrides. Defaults come from the saved admin profile.
+    # ``subagent_count`` is retained as a compatibility alias while the UI and
+    # runtime migrate to the more accurate subtask-worker terminology.
+    subtask_worker_count: int | None = Field(default=None, ge=1, le=6)
+    subagent_count: int | None = Field(default=None, ge=1, le=6)
+    route_max_tokens: int | None = Field(default=None, ge=256, le=2_000)
+    planner_max_tokens: int | None = Field(default=None, ge=512, le=6_000)
+    repo_navigation_max_tokens: int | None = Field(default=None, ge=512, le=4_000)
+    simple_patch_max_tokens: int | None = Field(default=None, ge=2_000, le=16_000)
+    patch_max_tokens: int | None = Field(default=None, ge=4_000, le=32_000)
+    progress_max_tokens: int | None = Field(default=None, ge=512, le=4_000)
+
+    attached_files: list[CodingAgentAttachedFile] = Field(default_factory=list, max_length=20)
+
+
+class CodingAgentRunResult(BaseModel):
+    thread_id: str
+    status: str = "unknown"
+
+    report: str | None = None
+
+    # Clean, concise markdown string derived from the agent's final output at the
+    # response boundary. ``report`` remains populated for legacy consumers.
+    markdown_response: str | None = None
+
+    selected_skill: str | None = None
+    selected_skills: list[str] = Field(default_factory=list)
+    task_mode: Literal["simple", "standard", "parallel"] | None = None
+
+    # Legacy planning/context aliases retained for compatibility.
+    subtasks: List[Dict[str, Any]] = Field(default_factory=list)
+    context_worker_count: int = 0
+
+    # Divide-and-conquer execution state. These fields make implementation-unit
+    # progress deterministic and observable without forcing clients to inspect
+    # the untyped ``raw`` graph state.
+    implementation_units: List[Dict[str, Any]] = Field(default_factory=list)
+    completion_ledger: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    implementation_generation: int = 0
+    implementation_iteration: int = 0
+    max_implementation_iterations: int = 0
+    subtask_worker_count: int = 0
+    subtask_worker_results: List[Dict[str, Any]] = Field(default_factory=list)
+    runtime_settings: Dict[str, Any] = Field(default_factory=dict)
+
+    route_confidence: float | None = None
+    route_reason: str | None = None
+
+    plan: List[str] = Field(default_factory=list)
+    files_inspected: List[str] = Field(default_factory=list)
+    patch_summary: str | None = None
+    file_changes: List[Dict[str, Any]] = Field(default_factory=list)
+    diffs: List[str] = Field(default_factory=list)
+
+    validation_commands: List[str] = Field(default_factory=list)
+    validation_results: List[Dict[str, Any]] = Field(default_factory=list)
+
+    approval_required: bool = False
+    approval_status: Literal["not_required", "pending", "applied", "rejected"] = "not_required"
+    blocking_validation_failed: bool = False
+    advisory_validation_failed: bool = False
+    applied_files: list[str] = Field(default_factory=list)
+
+    memory_enabled: bool = False
+    memory_namespace: str | None = None
+    long_term_memories: List[str] = Field(default_factory=list)
+    memory_errors: List[str] = Field(default_factory=list)
+
+    errors: List[str] = Field(default_factory=list)
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CodingAgentClientMessage(BaseModel):
+    type: Literal[
+        "ping",
+        "run.request",
+        "run.apply.request",
+        "run.reject.request",
+    ]
+    
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CodingAgentServerEvent(BaseModel):
+    type: Literal[
+        "session.ready",
+        "run.started",
+        "node.completed",
+        "run.completed",
+        "run.failed",
+        "run.approval_required",
+        "run.applied",
+        "run.rejected",
+        "pong",
+    ]
+
+    run_id: str | None = None
+    thread_id: str | None = None
+    node: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+
+
+
+
+############################## VOICE AGENT ##############################
+
+class VoiceMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
+class VoiceTextTurnRequest(BaseModel):
+    text: str = Field(min_length=1)
+    session_id: str | None = None
+    history: list[VoiceMessage] = Field(default_factory=list)
+    repo_root: str | None = None
+    workspace_root: str | None = None
+    active_path: str | None = None
+    allow_write: bool = False
+
+
+class VoiceAgentTurnResponse(BaseModel):
+    session_id: str
+    transcript: str
+    reply_text: str
+
+    # Clean, concise markdown version of the assistant reply, formatted at the
+    # HTTP response boundary. ``reply_text`` remains populated for legacy consumers.
+    markdown_response: str | None = None
+
+    status: Literal["clarifying", "ready", "error"] = "clarifying"
+
+    # When ready, frontend should hand this to the existing coding agent.
+    coding_request: str | None = None
+
+    audio_mime_type: str | None = None
+    audio_base64: str | None = None
+
+    errors: list[str] = Field(default_factory=list)
+
+
+
+
+
+############################## REPOSITORY API ##############################
+class RepositoryTreeEntry(BaseModel):
+    path: str
+    name: str
+    kind: Literal["file", "directory"]
+    depth: int = 0
+    size: int | None = None
+
+
+class RepositoryTreeResponse(BaseModel):
+    repo_root: str
+    entries: List[RepositoryTreeEntry] = Field(default_factory=list)
+
+
+class RepositoryFileResponse(BaseModel):
+    repo_root: str
+    path: str
+    language: str = "plaintext"
+    content: str
+    size: int
+
+
+
+
+
+
+############################## GITHUB ##############################
+class GitHubRepositoryImportRequest(BaseModel):
+    full_name: str = Field(..., examples=["owner/repository"])
+    ref: str | None = Field(default=None, description="Branch to check out.")
+    refresh: bool = Field(
+        default=False,
+        description="Fetch and fast-forward an existing managed checkout.",
+    )
+
+
+class GitHubRepositorySummary(BaseModel):
+    id: int
+    full_name: str
+    name: str
+    owner: str
+    private: bool
+    default_branch: str
+    clone_url: str
+    html_url: str
+    updated_at: str | None = None
+    permissions: dict[str, bool] = Field(default_factory=dict)
+
+
+class GitHubRepositoryImportResponse(BaseModel):
+    full_name: str
+    ref: str
+    repo_root: str
+    reused_existing_checkout: bool
+    previous_ref: str | None = None
+    saved_previous_changes: bool = False
+    restored_target_changes: bool = False
+
+
+class GitHubBranchSummary(BaseModel):
+    name: str
+    sha: str
+
+
+class GitHubConnectionTestResponse(BaseModel):
+    connected: bool
+    api_connected: bool
+    git_available: bool
+    git_transport_connected: bool
+    workspace_writable: bool
+    token_kind: Literal["user", "installation"]
+    account: str | None = None
+    full_name: str | None = None
+    default_branch: str | None = None
+    permissions: dict[str, bool] = Field(default_factory=dict)
+    message: str
+
+
+class GitHubRepositoryStatus(BaseModel):
+    full_name: str
+    repo_root: str
+    branch: str
+    default_branch: str
+    head_sha: str
+    upstream: str | None = None
+    ahead: int = 0
+    behind: int = 0
+    dirty: bool
+    staged_files: list[str] = Field(default_factory=list)
+    unstaged_files: list[str] = Field(default_factory=list)
+    untracked_files: list[str] = Field(default_factory=list)
+
+
+class GitHubCreateBranchRequest(BaseModel):
+    full_name: str
+    branch: str
+    base: str | None = None
+
+
+class GitHubCreateBranchResponse(BaseModel):
+    full_name: str
+    branch: str
+    sha: str
+
+
+class GitHubPullRequest(BaseModel):
+    full_name: str
+
+
+class GitHubPullResponse(BaseModel):
+    full_name: str
+    branch: str
+    head_sha: str
+    changed: bool
+
+
+class GitHubCommitRequest(BaseModel):
+    full_name: str
+    message: str = Field(min_length=3, max_length=200)
+    paths: list[str] = Field(min_length=1)
+
+
+class GitHubCommitResponse(BaseModel):
+    full_name: str
+    branch: str
+    commit_sha: str
+    committed_files: list[str]
+
+
+class GitHubPushRequest(BaseModel):
+    full_name: str
+
+
+class GitHubPushResponse(BaseModel):
+    full_name: str
+    branch: str
+    commit_sha: str
+    pushed: bool
+
+
+class GitHubPullRequestCreateRequest(BaseModel):
+    full_name: str
+    title: str = Field(min_length=3, max_length=256)
+    body: str = Field(default="", max_length=65_536)
+    base: str | None = None
+    head: str | None = None
+    draft: bool = True
+    maintainer_can_modify: bool = True
+
+
+class GitHubPullRequestResponse(BaseModel):
+    full_name: str
+    number: int
+    title: str
+    html_url: str
+    base: str
+    head: str
+    draft: bool
+    created: bool
+
+
+
+
+
+
+
+
+
+############################## ADMIN ##############################
+
+class AgentConfigurationUpdate(BaseModel):
+    coding_provider: ChatProvider
+    coding_model: str = Field(min_length=1, max_length=255)
+    reasoning_provider: ChatProvider
+    reasoning_model: str = Field(min_length=1, max_length=255)
+    caption_provider: ChatProvider
+    caption_model: str = Field(min_length=1, max_length=255)
+    voice_chat_provider: ChatProvider
+    voice_chat_model: str = Field(min_length=1, max_length=255)
+    voice_stt_provider: ChatProvider
+    voice_stt_model: str = Field(min_length=1, max_length=255)
+    voice_tts_provider: ChatProvider
+    voice_tts_model: str = Field(min_length=1, max_length=255)
+    voice_tts_voice: str = Field(min_length=1, max_length=100)
+    voice_tts_enabled: bool = True
+
+    coding_max_subtask_workers: int | None = Field(default=None, ge=1, le=6)
+    coding_max_implementation_units: int | None = Field(default=None, ge=1, le=12)
+    coding_max_patch_retries_per_unit: int | None = Field(default=None, ge=0, le=4)
+    coding_max_implementation_iterations: int | None = Field(default=None, ge=1, le=8)
+    coding_route_max_tokens: int | None = Field(default=None, ge=256, le=2_000)
+    coding_planner_max_tokens: int | None = Field(default=None, ge=512, le=6_000)
+    coding_repo_navigation_max_tokens: int | None = Field(default=None, ge=512, le=4_000)
+    coding_simple_patch_max_tokens: int | None = Field(default=None, ge=2_000, le=16_000)
+    coding_reconciliation_max_tokens: int | None = Field(default=None, ge=2_000, le=32_000)
+    coding_reconciliation_context_max_tokens: int | None = Field(default=None, ge=4_000, le=64_000)
+    coding_max_reasoning_reconciliations: int | None = Field(default=None, ge=0, le=3)
+    coding_context_prompt_base_tokens: int | None = Field(default=None, ge=4_000, le=64_000)
+    coding_max_context_prompt_tokens: int | None = Field(default=None, ge=8_000, le=128_000)
+    coding_context_prompt_reserve_tokens: int | None = Field(default=None, ge=2_000, le=64_000)
+    coding_context_window_safety_tokens: int | None = Field(default=None, ge=1_000, le=32_000)
+    coding_model_context_window_tokens: int | None = Field(default=None, ge=16_000, le=2_000_000)
+    reasoning_model_context_window_tokens: int | None = Field(default=None, ge=16_000, le=2_000_000)
+    coding_model_max_output_tokens: int | None = Field(default=None, ge=2_000, le=128_000)
+    reasoning_model_max_output_tokens: int | None = Field(default=None, ge=2_000, le=128_000)
+
+    secrets: dict[ChatProvider, str] = Field(default_factory=dict)
+    github_token: str | None = Field(default=None, max_length=4_096)
+
+    @field_validator(
+        "coding_model",
+        "reasoning_model",
+        "caption_model",
+        "voice_chat_model",
+        "voice_stt_model",
+        "voice_tts_model",
+        "voice_tts_voice",
+        "github_token",
+    )
+    @classmethod
+    def normalize_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+
+class SkillWriteRequest(BaseModel):
+    agent: AgentKind
+    name: str
+    content: str = Field(min_length=1, max_length=MAX_SKILL_CHARS)
+    overwrite: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("-", "_")
+        if not NAME_RE.fullmatch(normalized):
+            raise ValueError(
+                "Skill names must start with a letter and contain only lowercase "
+                "letters, numbers, underscores, or hyphens."
+            )
+        return normalized
+
+
+class SkillDraftRequest(BaseModel):
+    agent: AgentKind
+    prompt: str = Field(min_length=3, max_length=8_000)
+    source_markdown: str | None = Field(default=None, max_length=MAX_SKILL_CHARS)
+    suggested_name: str | None = Field(default=None, max_length=128)
+
+    @field_validator("suggested_name")
+    @classmethod
+    def normalize_suggested_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        
+        normalized = value.strip().lower().replace("-", "_")
+        normalized = re.sub(r"[^a-z0-9_]+", "_", normalized).strip("_")
+
+        if not normalized:
+            return None
+        
+        if not normalized.startswith("custom_"):
+            normalized = f"custom_{normalized}"
+            
+        return normalized[:128]
+
+
+class SkillDraftDecision(BaseModel):
+    registry_name: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=1, max_length=500)
+    use_when: list[str] = Field(default_factory=list, max_length=8)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=20)
+    steps: list[str] = Field(default_factory=list, max_length=12)
+    rules: list[str] = Field(default_factory=list, max_length=12)
+
+
+class SkillDraftResponse(BaseModel):
+    agent: AgentKind
+    name: str
+    purpose: str
+    allowed_tools: list[str] = Field(default_factory=list)
+    missing_tools: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    content: str
+
+
+class ToolQuarantineRequest(BaseModel):
+    agent: AgentKind
+    name: str
+    purpose: str = Field(min_length=1, max_length=500)
+    source: str = Field(min_length=1, max_length=MAX_TOOL_CHARS)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("-", "_")
+        if not NAME_RE.fullmatch(normalized):
+            raise ValueError("Tool names must use lowercase snake_case.")
+        return normalized
+
+    @field_validator("purpose")
+    @classmethod
+    def normalize_purpose(cls, value: str) -> str:
+        return value.strip()
+
+
+class ToolGenerateRequest(BaseModel):
+    tool_type: AgentKind
+    prompt: str = Field(min_length=3, max_length=8_000)
+
+
+class ToolFileUpdateRequest(BaseModel):
+    agent: AgentKind
+    path: str
+    content: str = Field(min_length=1, max_length=MAX_TOOL_CHARS)
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        normalized = value.strip()
+        match = re.fullmatch(r"custom_pending/([a-z][a-z0-9_]*)\.py", normalized)
+        if match is None or not NAME_RE.fullmatch(match.group(1)):
+            raise ValueError("Only custom_pending/<tool_name>.py files may be edited.")
+        return normalized
+
+
+class SkillSummary(BaseModel):
+    agent: AgentKind
+    name: str
+    purpose: str
+    allowed_tools: list[str] = Field(default_factory=list)
+    content: str
+    custom: bool
+
+
+class ToolSummary(BaseModel):
+    agent: AgentKind
+    name: str
+    module: str
+    purpose: str
+    status: Literal["builtin", "approved", "pending_review"]
+
+
+class ToolReviewResponse(ToolSummary):
+    source: str
+    approval_ready: bool = False
+    validation_errors: list[str] = Field(default_factory=list)
+
+
+
+
+
+
+
+
+
+
+
+############################## RAG ##############################
+class RagQueryRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    
+    # Configuration overrides
+    k: Optional[int] = None
+    namespace: Optional[str] = None
+    collection_name: Optional[str] = None
+    preferred_collections: Optional[List[str]] = None
+    enable_query_expansion: Optional[bool] = None
+    enable_parallel_collection_retrieval: Optional[bool] = None
+
+
+class RagQueryResponse(BaseModel):
+    answer: Union[str, Dict]
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class IngestRequest(BaseModel):
+    # Accept files/dirs/globs
+    paths: List[str] = Field(..., min_length=1)
+    namespace: Optional[str] = None
+    collection_name: Optional[str] = None
+
+
+class IngestResponse(BaseModel):
+    ingested_chunks: int
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceRow(BaseModel):
+    # id: int
+    source_uri: str
+    content_hash: str
+    collection_name: str
+    namespace: str
+    chunk_size: int
+    chunk_overlap: int
+
+
+class SourcesListResponse(BaseModel):
+    sources: List[SourceRow]
+
+
+
