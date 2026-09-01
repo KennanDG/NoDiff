@@ -24,7 +24,7 @@ MAX_VOICE_ATTACHMENTS = 20
 MAX_VOICE_ATTACHMENT_CONTENT_CHARS = 20_000
 MAX_TOTAL_VOICE_ATTACHMENT_CONTENT_CHARS = 60_000
 MAX_VOICE_SKILL_CONTEXT_CHARS = 3_600
-VOICE_SKILLS_DIR = Path(__file__).resolve().parents[2] / "ai_agents" / "agents" / "voice" / "skills"
+VOICE_SKILLS_DIR = Path(__file__).resolve().parents[2] / "agent_runtime" / "agents" / "voice" / "skills"
 # print("voice skills dir:", VOICE_SKILLS_DIR)
 
 
@@ -95,7 +95,7 @@ LANGUAGE_BY_EXTENSION = {
 
 
 ################ ADMIN ################
-AI_AGENTS_ROOT = Path(__file__).resolve().parents[2]
+AGENT_RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 
 
 CUSTOM_PREFIX = "custom_"

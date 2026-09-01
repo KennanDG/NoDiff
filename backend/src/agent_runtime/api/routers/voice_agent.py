@@ -6,10 +6,10 @@ from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from ai_agents.agents.coding.skill_registry import SkillRegistry
-from ai_agents.agents.voice.service import VoiceAgentService
-from ai_agents.api.api_schemas import VoiceAgentTurnResponse, format_agent_markdown
-from ai_agents.config.constants import (
+from agent_runtime.agents.coding.skill_registry import SkillRegistry
+from agent_runtime.agents.voice.service import VoiceAgentService
+from agent_runtime.api.api_schemas import VoiceAgentTurnResponse, format_agent_markdown
+from agent_runtime.config.constants import (
     MAX_VOICE_ATTACHMENTS,
     MAX_VOICE_ATTACHMENT_CONTENT_CHARS,
     MAX_TOTAL_VOICE_ATTACHMENT_CONTENT_CHARS,

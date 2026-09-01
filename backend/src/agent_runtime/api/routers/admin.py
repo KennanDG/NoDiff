@@ -13,26 +13,26 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ai_agents.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
-from ai_agents.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
+from agent_runtime.agents.coding.tool_registry import (
     CODING_TOOLS_DIR,
     ApprovedCustomToolRegistry,
     CustomToolValidationError,
     validate_approved_custom_tool_source,
 )
-from ai_agents.agents.voice.tool_registry import (
+from agent_runtime.agents.voice.tool_registry import (
     VOICE_TOOLS_DIR,
     ApprovedCustomVoiceToolRegistry,
     validate_voice_custom_tool_source,
 )
-from ai_agents.agents.coding.model_factory import build_chat_model
-from ai_agents.agents.coding.utils.text import message_content_to_text
-from ai_agents.config.model_catalog import ModelCapability, discover_models
-from ai_agents.config.runtime_configuration import runtime_agent_configuration
-from ai_agents.config.constants import ChatProvider, AgentKind
-from ai_agents.config.settings import settings as config_settings
+from agent_runtime.agents.coding.model_factory import build_chat_model
+from agent_runtime.agents.coding.utils.text import message_content_to_text
+from agent_runtime.config.model_catalog import ModelCapability, discover_models
+from agent_runtime.config.runtime_configuration import runtime_agent_configuration
+from agent_runtime.config.constants import ChatProvider, AgentKind
+from agent_runtime.config.settings import settings as config_settings
 
-from ai_agents.api.api_schemas import (
+from agent_runtime.api.api_schemas import (
     NAME_RE,
     AgentConfigurationUpdate,
     SkillWriteRequest,
@@ -45,8 +45,8 @@ from ai_agents.api.api_schemas import (
     ToolSummary,
     ToolReviewResponse,
 )
-from ai_agents.config.constants import (
-    AI_AGENTS_ROOT,
+from agent_runtime.config.constants import (
+    AGENT_RUNTIME_ROOT,
     VOICE_SKILLS_DIR,
     CUSTOM_PREFIX,
     CODING_RUNTIME_FIELDS,
@@ -63,8 +63,8 @@ SKILL_DIRS: dict[AgentKind, Path] = {
     "voice": VOICE_SKILLS_DIR.resolve(),
 }
 TOOL_DIRS: dict[AgentKind, Path] = {
-    # Resolve coding tools from the importable ai_agents package itself. This avoids
-    # accidentally creating src/agents/coding/tools beside src/ai_agents/... .
+    # Resolve coding tools from the importable agent_runtime package itself. This avoids
+    # accidentally creating src/agents/coding/tools beside src/agent_runtime/... .
     "coding": CODING_TOOLS_DIR,
     "voice": VOICE_TOOLS_DIR.resolve(),
 }
@@ -137,9 +137,9 @@ def _safe_agent_dir(mapping: dict[AgentKind, Path], agent: AgentKind) -> Path:
 
 
 def _migrate_legacy_coding_assets() -> None:
-    """Move custom assets created under the old src/agents/... root into ai_agents."""
+    """Move custom assets created under the old src/agents/... root into agent_runtime."""
 
-    legacy_skill_root = (AI_AGENTS_ROOT / "agents" / "coding" / "skills").resolve()
+    legacy_skill_root = (AGENT_RUNTIME_ROOT / "agents" / "coding" / "skills").resolve()
     canonical_skill_root = SKILL_DIRS["coding"].resolve()
 
     if legacy_skill_root != canonical_skill_root and legacy_skill_root.exists():
@@ -150,7 +150,7 @@ def _migrate_legacy_coding_assets() -> None:
             if not target.exists():
                 os.replace(source, target)
 
-    legacy_tool_root = (AI_AGENTS_ROOT / "agents" / "coding" / "tools").resolve()
+    legacy_tool_root = (AGENT_RUNTIME_ROOT / "agents" / "coding" / "tools").resolve()
     canonical_tool_root = TOOL_DIRS["coding"].resolve()
 
     if legacy_tool_root != canonical_tool_root and legacy_tool_root.exists():
@@ -168,9 +168,9 @@ def _migrate_legacy_coding_assets() -> None:
 
 
 def _migrate_legacy_voice_assets() -> None:
-    """Move voice assets created under the old src/agents/... root into ai_agents."""
+    """Move voice assets created under the old src/agents/... root into agent_runtime."""
 
-    legacy_root = (AI_AGENTS_ROOT / "agents" / "voice").resolve()
+    legacy_root = (AGENT_RUNTIME_ROOT / "agents" / "voice").resolve()
     canonical_skill_root = SKILL_DIRS["voice"].resolve()
     canonical_tool_root = TOOL_DIRS["voice"].resolve()
 
@@ -677,7 +677,7 @@ def update_agent_configuration(request: AgentConfigurationUpdate) -> dict[str, A
     # VoiceAgentService keeps a provider client. Clear it so the next turn uses the
     # new model/key. The coding-agent model factory already resolves every run.
     try:
-        from ai_agents.api.routers.voice_agent import get_voice_service
+        from agent_runtime.api.routers.voice_agent import get_voice_service
 
         get_voice_service.cache_clear()
     except (ImportError, AttributeError):

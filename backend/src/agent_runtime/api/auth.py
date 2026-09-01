@@ -15,7 +15,7 @@ load_dotenv()
 
 
 def resolved_api_key() -> str | None:
-    return os.environ.get("AI_AGENTS_API_KEY") or settings.resolved_ai_agents_api_key()
+    return os.environ.get("AGENT_RUNTIME_API_KEY") or settings.resolved_agent_runtime_api_key()
 
 
 def is_valid_api_key(provided: str | None) -> bool:
@@ -43,7 +43,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if not expected:
             return JSONResponse(
                 status_code=500,
-                content={"detail": "AI_AGENTS_API_KEY is not configured"},
+                content={"detail": "AGENT_RUNTIME_API_KEY is not configured"},
             )
 
         if not is_valid_api_key(provided):
@@ -102,7 +102,7 @@ async def authorize_websocket(websocket: WebSocket) -> bool:
     if not expected:
         await websocket.close(
             code=status.WS_1011_INTERNAL_ERROR,
-            reason="AI_AGENTS_API_KEY is not configured",
+            reason="AGENT_RUNTIME_API_KEY is not configured",
         )
         return False
 

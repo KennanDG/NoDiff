@@ -64,17 +64,6 @@ class Settings(BaseSettings):
         return None
 
 
-    def resolved_qdrant_api_key(self) -> str | None:
-        if self.qdrant_api_key:
-            return self.qdrant_api_key
-        
-        if self.qdrant_secret_arn:
-            self.qdrant_api_key = get_secret_json(self.qdrant_secret_arn).get("QDRANT_API_KEY")
-            return self.qdrant_api_key
-        
-        return None
-    
-
     def resolved_langchain_api_key(self) -> str | None:
         if self.langchain_api_key:
             return self.langchain_api_key
@@ -86,25 +75,14 @@ class Settings(BaseSettings):
         return None
     
 
-    def resolved_jina_api_key(self) -> str | None:
-        if self.jina_api_key:
-            return self.jina_api_key
-        
-        if self.jina_secret_arn:
-            self.jina_api_key = get_secret_json(self.jina_secret_arn).get("JINA_API_KEY")
-            return self.jina_api_key
-        
-        return None
-    
 
-
-    def resolved_ai_agents_api_key(self) -> str | None:
-        if self.ai_agents_api_key:
-            return self.ai_agents_api_key
+    def resolved_agent_runtime_api_key(self) -> str | None:
+        if self.agent_runtime_api_key:
+            return self.agent_runtime_api_key
         
-        if self.ai_agents_secret_arn:
-            self.ai_agents_api_key = get_secret_json(self.ai_agents_secret_arn).get("AI_AGENTS_API_KEY")
-            return self.ai_agents_api_key
+        if self.agent_runtime_secret_arn:
+            self.agent_runtime_api_key = get_secret_json(self.agent_runtime_secret_arn).get("AGENT_RUNTIME_API_KEY")
+            return self.agent_runtime_api_key
         
         return None
     
@@ -138,8 +116,8 @@ class Settings(BaseSettings):
 
 
     # App API key
-    ai_agents_api_key: str | None = Field(default=None, alias="AI_AGENTS_API_KEY")
-    ai_agents_secret_arn: str | None = Field(default=None, alias="AI_AGENTS_SECRET_ARN")
+    agent_runtime_api_key: str | None = Field(default=None, alias="AGENT_RUNTIME_API_KEY")
+    agent_runtime_secret_arn: str | None = Field(default=None, alias="AGENT_RUNTIME_SECRET_ARN")
 
     # GitHub repository integration
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
@@ -151,16 +129,16 @@ class Settings(BaseSettings):
     github_api_url: str = Field(default="https://api.github.com", alias="GITHUB_API_URL")
     github_api_version: str = Field(default="2026-03-10", alias="GITHUB_API_VERSION")
     github_workspace_root: str = Field(
-        default=".ai-agents/github-workspaces",
+        default=".agent-runtime/github-workspaces",
         alias="GITHUB_WORKSPACE_ROOT",
     )
     github_timeout_seconds: int = Field(default=120, alias="GITHUB_TIMEOUT_SECONDS")
     github_commit_author_name: str = Field(
-        default="AI Agents",
+        default="Agent Runtime",
         alias="GITHUB_COMMIT_AUTHOR_NAME",
     )
     github_commit_author_email: str = Field(
-        default="ai-agents@users.noreply.github.com",
+        default="agent-runtime@users.noreply.github.com",
         alias="GITHUB_COMMIT_AUTHOR_EMAIL",
     )
     github_allow_default_branch_push: bool = Field(
@@ -196,7 +174,7 @@ class Settings(BaseSettings):
     langchain_api_key: str | None = Field(default=None, alias="LANGCHAIN_API_KEY")
     langsmith_api_url: str | None = Field(default="https://api.smith.langchain.com", alias="LANGCHAIN_ENDPOINT")
     langchain_secret_arn: str | None = Field(default=None, alias="LANGCHAIN_SECRET_ARN")
-    langchain_project : str = Field(default="ai-agents-dev", alias="LANGCHAIN_PROJECT")
+    langchain_project : str = Field(default="agent-runtime-dev", alias="LANGCHAIN_PROJECT")
 
 
     # Chat model routing. Model IDs can be overridden by the runtime admin API.
@@ -260,8 +238,8 @@ class Settings(BaseSettings):
     # Non-secret runtime model selections are persisted here. Provider secrets remain
     # in environment/Secrets Manager or in the current backend process only.
     runtime_agent_config_path: str = Field(
-        default=".ai-agents/runtime-agent-config.json",
-        alias="AI_AGENTS_RUNTIME_CONFIG_PATH",
+        default=".agent-runtime/runtime-agent-config.json",
+        alias="AGENT_RUNTIME_CONFIG_PATH",
     )
 
     # Coding-agent execution profile. These defaults mirror CodingAgentSettings
@@ -351,56 +329,10 @@ class Settings(BaseSettings):
         default=1_200, ge=512, le=4_000, alias="CODING_AGENT_PROGRESS_MAX_TOKENS"
     )
 
-    # Qdrant
-    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
-    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
-    qdrant_secret_arn: str | None = Field(default=None, alias="QDRANT_SECRET_ARN")
-    qdrant_collection: str = Field(default="rag-default", alias="QDRANT_COLLECTION")
-
     # FastEmbed
     
     rerank_device: str = Field(default="cpu", alias="RERANK_DEVICE") 
 
-
-    # Jina AI
-    embedding_model: str = Field(default="google_genai:gemini-embedding-2", alias="EMBEDDING_MODEL")    # Doc embedding
-    rerank_model: str = Field(default="jina-reranker-v3", alias="RERANK_MODEL")
-    jina_api_key: str | None = Field(default=None, alias="JINA_API_KEY")
-    jina_api_url: str | None = Field(default="https://api.jina.ai/v1", alias="JINA_URL")
-    jina_secret_arn: str | None = Field(default=None, alias="JINA_SECRET_ARN")
-
-
-    # DB
-    database_url: str = Field(
-        default="postgresql+psycopg://ai_agents:ai_agents@localhost:5432/ai_agents",
-        alias="DATABASE_URL",
-    )
-
-    # Retrieval
-    k: int = Field(default=8, alias="K")
-    candidate_k: int = Field(default=30, alias="CANDIDATE_K")   # docs kept after RRF before rerank
-    k_per_query: int = Field(default=8, alias="K_PER_QUERY")    # docs retrieved per expanded query
-    rrf_k: int = Field(default=60, alias="RRF_K")               # RRF constant
-    min_docs_for_success: int = Field(default=2, alias="MIN_DOCS_FOR_SUCCESS")
-    max_collection_fallbacks: int = Field(default=3, alias="MAX_COLLECTION_FALLBACKS")
-    retrieve_workers: int = Field(default=8, alias="RETRIEVE_WORKERS")
-    preferred_collections: List[str] = Field(default=["rag-engineering", "rag-robotics", "rag-cs"], alias="PREFERRED_COLLECTIONS")
-    enable_parallel_collection_retrieval: bool = Field(default=True, alias="ENABLE_PARALLEL_COLLECTION_RETRIEVAL")
-    parallel_collection_workers: int = Field(default=2, alias="PARALLEL_COLLECTION_WORKERS")
-    
-    n_query_expansions: int = Field(default=2, alias="N_QUERY_EXPANSIONS")
-    enable_query_expansion: bool = Field(default=True, alias="ENABLE_QUERY_EXPANSION")
-    min_question_chars_for_expansion: int = Field(default=25, alias="MIN_QUESTION_CHARS_FOR_EXPANSION")
-
-
-    # Generation
-    max_rag_attempts: int = Field(default=2, alias="MAX_RAG_ATTEMPTS")
-    retrieve_attempts: int = Field(default=2, alias="RETRIEVE_ATTEMPTS")
-    generate_attempts: int = Field(default=2, alias="GENERATE_ATTEMPTS")
-    verify_attempts: int = Field(default=2, alias="VERIFY_ATTEMPTS")
-    verify_max_chars: int = Field(default=6_000, alias="VERIFY_MAX_CHARS")
-    verify_docs_attempts: int = Field(default=2, alias="VERIFY_DOCS_ATTEMPTS")
-    verify_docs_max_chars: int = Field(default=6_000, alias="VERIFY_DOCS_MAX_CHARS")
 
     # Voice Agent
     voice_stt_model: str = Field(default="whisper-large-v3-turbo", alias="VOICE_STT_MODEL")

@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, List, Optional, Union, Literal
 from pydantic import BaseModel, Field, field_validator
 
-from ai_agents.config.constants import (
+from agent_runtime.config.constants import (
     ChatProvider, 
     AgentKind, 
     NAME_RE,

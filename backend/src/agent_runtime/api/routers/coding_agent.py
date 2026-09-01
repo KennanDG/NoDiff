@@ -17,15 +17,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from ai_agents.agents.coding.graph import build_coding_agent_graph
-from ai_agents.agents.coding.model_factory import caption_model
-from ai_agents.agents.coding.memory import (
+from agent_runtime.agents.coding.graph import build_coding_agent_graph
+from agent_runtime.agents.coding.model_factory import caption_model
+from agent_runtime.agents.coding.memory import (
     CodingAgentRuntimeContext,
     coding_agent_persistence,
 )
-from ai_agents.agents.coding.coding_agent_settings import settings as default_coding_settings
-from ai_agents.api.auth import authorize_websocket, generate_websocket_token
-from ai_agents.api.api_schemas import (
+from agent_runtime.agents.coding.coding_agent_settings import settings as default_coding_settings
+from agent_runtime.api.auth import authorize_websocket, generate_websocket_token
+from agent_runtime.api.api_schemas import (
     CodingAgentClientMessage,
     CodingAgentRunRequest,
     CodingAgentRunResult,
@@ -35,15 +35,15 @@ from ai_agents.api.api_schemas import (
     RepositoryTreeResponse,
     format_agent_markdown,
 )
-from ai_agents.agents.coding.sandbox import (
+from agent_runtime.agents.coding.sandbox import (
     CodingSandbox,
     apply_sandbox_files_to_repo,
     cleanup_coding_sandbox,
     create_coding_sandbox,
 )
-from ai_agents.agents.coding.utils.validation import validation_failed_results
-from ai_agents.config.settings import settings as config_settings
-from ai_agents.config.constants import (
+from agent_runtime.agents.coding.utils.validation import validation_failed_results
+from agent_runtime.config.settings import settings as config_settings
+from agent_runtime.config.constants import (
     IGNORED_REPOSITORY_FILES, 
     IGNORED_REPOSITORY_DIRS,
     MAX_REPOSITORY_FILE_BYTES,

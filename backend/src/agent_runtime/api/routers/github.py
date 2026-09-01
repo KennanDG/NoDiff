@@ -14,7 +14,7 @@ from typing import Any, Literal
 from fastapi import HTTPException, APIRouter, Query
 from pathlib import Path
 
-from ai_agents.api.api_schemas import (
+from agent_runtime.api.api_schemas import (
     GitHubRepositoryImportRequest,
     GitHubRepositorySummary,
     GitHubRepositoryImportResponse,
@@ -33,8 +33,8 @@ from ai_agents.api.api_schemas import (
     GitHubPullRequestResponse,
 )
 
-from ai_agents.config.settings import settings
-from ai_agents.config.constants import REPOSITORY_RE, IMPORT_LOCK, AUTO_STASH_PREFIX
+from agent_runtime.config.settings import settings
+from agent_runtime.config.constants import REPOSITORY_RE, IMPORT_LOCK, AUTO_STASH_PREFIX
 
 
 
@@ -254,7 +254,7 @@ class GitHubService:
         if not shutil.which("git"):
             raise HTTPException(
                 status_code=503,
-                detail="Git is not installed on the ai_agents backend host.",
+                detail="Git is not installed on the agent_runtime backend host.",
             )
 
         try:
