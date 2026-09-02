@@ -4,7 +4,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Literal
 
-from .secrets import get_secret_json
+# from .secrets import get_secret_json
 
 
 class Settings(BaseSettings):
@@ -13,9 +13,9 @@ class Settings(BaseSettings):
         if self.groq_api_key:
             return self.groq_api_key
         
-        if self.groq_secret_arn:
-            self.groq_api_key = get_secret_json(self.groq_secret_arn).get("GROQ_API_KEY")
-            return self.groq_api_key
+        # if self.groq_secret_arn:
+        #     self.groq_api_key = get_secret_json(self.groq_secret_arn).get("GROQ_API_KEY")
+        #     return self.groq_api_key
         
         return None
 
@@ -24,9 +24,9 @@ class Settings(BaseSettings):
         if self.deepseek_api_key:
             return self.deepseek_api_key
 
-        if self.deepseek_secret_arn:
-            self.deepseek_api_key = get_secret_json(self.deepseek_secret_arn).get("DEEPSEEK_API_KEY")
-            return self.deepseek_api_key
+        # if self.deepseek_secret_arn:
+        #     self.deepseek_api_key = get_secret_json(self.deepseek_secret_arn).get("DEEPSEEK_API_KEY")
+        #     return self.deepseek_api_key
 
         return None
 
@@ -35,9 +35,9 @@ class Settings(BaseSettings):
         if self.openrouter_api_key:
             return self.openrouter_api_key
 
-        if self.openrouter_secret_arn:
-            self.openrouter_api_key = get_secret_json(self.openrouter_secret_arn).get("OPENROUTER_API_KEY")
-            return self.openrouter_api_key
+        # if self.openrouter_secret_arn:
+        #     self.openrouter_api_key = get_secret_json(self.openrouter_secret_arn).get("OPENROUTER_API_KEY")
+        #     return self.openrouter_api_key
 
         return None
 
@@ -46,9 +46,9 @@ class Settings(BaseSettings):
         if self.openai_api_key:
             return self.openai_api_key
 
-        if self.openai_secret_arn:
-            self.openai_api_key = get_secret_json(self.openai_secret_arn).get("OPENAI_API_KEY")
-            return self.openai_api_key
+        # if self.openai_secret_arn:
+        #     self.openai_api_key = get_secret_json(self.openai_secret_arn).get("OPENAI_API_KEY")
+        #     return self.openai_api_key
 
         return None
 
@@ -57,9 +57,9 @@ class Settings(BaseSettings):
         if self.anthropic_api_key:
             return self.anthropic_api_key
 
-        if self.anthropic_secret_arn:
-            self.anthropic_api_key = get_secret_json(self.anthropic_secret_arn).get("ANTHROPIC_API_KEY")
-            return self.anthropic_api_key
+        # if self.anthropic_secret_arn:
+        #     self.anthropic_api_key = get_secret_json(self.anthropic_secret_arn).get("ANTHROPIC_API_KEY")
+        #     return self.anthropic_api_key
 
         return None
 
@@ -68,9 +68,9 @@ class Settings(BaseSettings):
         if self.langchain_api_key:
             return self.langchain_api_key
         
-        if self.langchain_secret_arn:
-            self.langchain_api_key = get_secret_json(self.langchain_secret_arn).get("LANGCHAIN_API_KEY")
-            return self.langchain_api_key
+        # if self.langchain_secret_arn:
+        #     self.langchain_api_key = get_secret_json(self.langchain_secret_arn).get("LANGCHAIN_API_KEY")
+        #     return self.langchain_api_key
         
         return None
     
@@ -80,9 +80,9 @@ class Settings(BaseSettings):
         if self.agent_runtime_api_key:
             return self.agent_runtime_api_key
         
-        if self.agent_runtime_secret_arn:
-            self.agent_runtime_api_key = get_secret_json(self.agent_runtime_secret_arn).get("AGENT_RUNTIME_API_KEY")
-            return self.agent_runtime_api_key
+        # if self.agent_runtime_secret_arn:
+        #     self.agent_runtime_api_key = get_secret_json(self.agent_runtime_secret_arn).get("AGENT_RUNTIME_API_KEY")
+        #     return self.agent_runtime_api_key
         
         return None
     
@@ -92,9 +92,9 @@ class Settings(BaseSettings):
         if self.github_token:
             return self.github_token
 
-        if self.github_secret_arn:
-            self.github_token = get_secret_json(self.github_secret_arn).get("GITHUB_TOKEN")
-            return self.github_token
+        # if self.github_secret_arn:
+        #     self.github_token = get_secret_json(self.github_secret_arn).get("GITHUB_TOKEN")
+        #     return self.github_token
 
         return None
 
@@ -103,9 +103,9 @@ class Settings(BaseSettings):
         if self.google_api_key:
             return self.google_api_key
 
-        if self.google_secret_arn:
-            self.google_api_key = get_secret_json(self.google_secret_arn).get("GOOGLE_API_KEY")
-            return self.google_api_key
+        # if self.google_secret_arn:
+        #     self.google_api_key = get_secret_json(self.google_secret_arn).get("GOOGLE_API_KEY")
+        #     return self.google_api_key
 
         return None
 

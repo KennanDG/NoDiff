@@ -123,6 +123,6 @@ override.tf.json
 
 
 groq_available_models.json
-.ai-agents/
+.agent-runtime/
 
-.ai-agents/memory/
+.agent-runtime/memory/
