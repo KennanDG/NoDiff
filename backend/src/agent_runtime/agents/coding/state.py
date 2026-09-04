@@ -18,8 +18,6 @@ CodingAgentStatus = Literal[
     "web_search_skipped",
     "web_search_completed",
     "web_search_failed",
-    "gmail_access_skipped",
-    "gmail_access_completed",
     "patches_reconciled",
     "patch_failed",
     "patch_skipped",
