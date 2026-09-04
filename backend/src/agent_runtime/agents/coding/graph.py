@@ -15,7 +15,6 @@ from agent_runtime.agents.coding.implementation import (
 from agent_runtime.agents.coding.memory import CodingAgentRuntimeContext
 from agent_runtime.agents.coding.nodes import (
     custom_tools_node,
-    gmail_access_node,
     plan_node,
     recall_memory_node,
     remember_run_node,
@@ -78,7 +77,6 @@ def build_coding_agent_graph(
     builder.add_node("report", report_node, retry_policy=no_retry)
     builder.add_node("remember_run", remember_run_node, retry_policy=transient_retry)
     builder.add_node("web_search", web_search_node, retry_policy=transient_retry)
-    builder.add_node("gmail_access", gmail_access_node, retry_policy=transient_retry)
 
     # Routing and memory recall are independent.
     builder.add_edge(START, "route")
@@ -90,7 +88,6 @@ def build_coding_agent_graph(
         route_after_plan,
         {
             "web_search": "web_search",
-            "gmail_access": "gmail_access",
             "repo_navigator": "custom_tools",
         },
     )
@@ -98,11 +95,9 @@ def build_coding_agent_graph(
         "web_search",
         route_after_web_search,
         {
-            "gmail_access": "gmail_access",
             "repo_navigator": "custom_tools",
         },
     )
-    builder.add_edge("gmail_access", "custom_tools")
     builder.add_edge("custom_tools", "repo_navigator")
 
     # Every navigation pass advances implementation_generation. Only the next
