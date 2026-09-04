@@ -32,7 +32,7 @@ VOICE_SKILLS_DIR = Path(__file__).resolve().parents[2] / "agent_runtime" / "agen
 ################ GITHUB ################
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IMPORT_LOCK = threading.RLock()
-AUTO_STASH_PREFIX = "ai-agents:auto-stash:"
+AUTO_STASH_PREFIX = "agent-runtime:auto-stash:"
 
 
 

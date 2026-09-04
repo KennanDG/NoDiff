@@ -67,7 +67,7 @@ def _models_url(provider: ChatProvider) -> str:
 def _headers(provider: ChatProvider, api_key: str | None) -> dict[str, str]:
     headers = {
         "accept": "application/json",
-        "user-agent": "ai-agents-model-catalog/1.0",
+        "user-agent": "agent-runtime-model-catalog/1.0",
     }
     if provider == "anthropic":
         if api_key:

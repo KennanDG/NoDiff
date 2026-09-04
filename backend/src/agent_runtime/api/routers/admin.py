@@ -878,7 +878,7 @@ def approve_tool(agent: AgentKind, name: str) -> ToolSummary:
     # Import/signature-check the candidate outside custom_approved first. This keeps
     # approval atomic from the runtime registry's perspective: a concurrent agent
     # run can see either the pending file or the fully validated approved file.
-    with tempfile.TemporaryDirectory(prefix="ai-agents-tool-approval-") as temporary_dir:
+    with tempfile.TemporaryDirectory(prefix="agent-runtime-tool-approval-") as temporary_dir:
         candidate_path = Path(temporary_dir) / pending_path.name
         _atomic_write(candidate_path, source)
         candidate_registry = _candidate_registry(agent, Path(temporary_dir)).load()
