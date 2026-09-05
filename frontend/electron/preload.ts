@@ -1,46 +1,19 @@
-import { contextBridge } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 
-contextBridge.exposeInMainWorld("desktop", {
+export type DesktopDirectoryPickerOptions = {
+  title?: string;
+  defaultPath?: string;
+};
+
+export type DesktopApi = {
+  platform: NodeJS.Platform;
+  selectDirectory: (options?: DesktopDirectoryPickerOptions) => Promise<string | null>;
+};
+
+const desktopApi: DesktopApi = Object.freeze({
   platform: process.platform,
+  selectDirectory: (options) =>
+    ipcRenderer.invoke("desktop:select-directory", options) as Promise<string | null>,
 });
 
-// import {
-//   contextBridge,
-//   ipcRenderer,
-// } from "electron";
-
-
-// type DesktopDirectoryPickerOptions = {
-//   title?: string;
-//   defaultPath?: string;
-// };
-
-
-// export type DesktopBackendInfo = {
-//   baseUrl: string;
-//   apiKey: string;
-//   managed: boolean;
-// };
-
-
-// contextBridge.exposeInMainWorld(
-//   "desktop",
-//   {
-//     platform: process.platform,
-
-//     selectDirectory: (
-//       options?: DesktopDirectoryPickerOptions,
-//     ): Promise<string | null> =>
-//       ipcRenderer.invoke(
-//         "desktop:select-directory",
-//         options,
-//       ),
-
-//     getBackendInfo:
-//       (): Promise<DesktopBackendInfo> =>
-//         ipcRenderer.invoke(
-//           "desktop:get-backend-info",
-//         ),
-//   },
-// );
-
+contextBridge.exposeInMainWorld("desktop", desktopApi);

@@ -352,6 +352,24 @@ class RepositoryFileResponse(BaseModel):
     size: int
 
 
+class LocalRepositorySessionUpdateRequest(BaseModel):
+    repo_root: str = Field(min_length=1, max_length=32_767)
+
+    @field_validator("repo_root")
+    @classmethod
+    def validate_repo_root(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Repository root must not be empty.")
+        if "\x00" in normalized:
+            raise ValueError("Repository root contains a null byte.")
+        return normalized
+
+
+class LocalRepositorySessionResponse(BaseModel):
+    repo_root: str | None = None
+    available: bool
+
 
 
 

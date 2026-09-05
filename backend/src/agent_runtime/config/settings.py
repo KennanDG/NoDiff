@@ -241,6 +241,15 @@ class Settings(BaseSettings):
         default=".agent-runtime/runtime-agent-config.json",
         alias="AGENT_RUNTIME_CONFIG_PATH",
     )
+    local_repository_session_path: str = Field(
+        # Keep the last repository outside the installation/current working
+        # directory so native Windows launches resolve the same session file.
+        default="~/.agent-runtime/local-repository-session.json",
+        alias="AGENT_RUNTIME_LOCAL_REPOSITORY_SESSION_PATH",
+    )
+    # Loaded from the validated local repository session at application startup.
+    # This is deliberately non-secret and is never read from an unvalidated path.
+    last_opened_local_repository: str | None = None
 
     # Coding-agent execution profile. These defaults mirror CodingAgentSettings
     # and can be changed through the admin UI for subsequent runs. The legacy

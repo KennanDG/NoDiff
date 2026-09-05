@@ -44,6 +44,11 @@ export type GitHubRepositoryImportResponse = {
   restored_target_changes: boolean;
 };
 
+export type SavedLocalRepositoryRoot = {
+  repo_root: string | null;
+  available: boolean;
+};
+
 // TODO: Replace renderer API-key access with a short-lived backend session token.
 const apiUrl = (
   path: string,
@@ -112,6 +117,33 @@ export const fetchRepositoryFile = async ({
 
   const response = await fetch(url, { headers: authHeaders(apiKey) });
   return readJson<RepositoryFile>(response);
+};
+
+
+export const fetchSavedLocalRepositoryRoot = async ({
+  apiBaseUrl,
+  apiKey,
+}: ApiClientConfig): Promise<SavedLocalRepositoryRoot> => {
+  const response = await fetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
+    headers: authHeaders(apiKey),
+  });
+  return readJson<SavedLocalRepositoryRoot>(response);
+};
+
+export const saveLocalRepositoryRoot = async ({
+  apiBaseUrl,
+  apiKey,
+  repoRoot,
+}: RepositoryRequest): Promise<SavedLocalRepositoryRoot> => {
+  const response = await fetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      ...authHeaders(apiKey),
+    },
+    body: JSON.stringify({ repo_root: repoRoot }),
+  });
+  return readJson<SavedLocalRepositoryRoot>(response);
 };
 
 export const fetchGitHubStatus = async ({
