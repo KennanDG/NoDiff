@@ -5,23 +5,22 @@ import json
 import logging
 import re
 import sqlite3
-
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.store.base import BaseStore
-
 from agent_runtime.agents.coding.coding_agent_settings import (
     CodingAgentSettings,
+)
+from agent_runtime.agents.coding.coding_agent_settings import (
     settings as default_settings,
 )
 from agent_runtime.agents.coding.state import CodingAgentState
 from agent_runtime.agents.coding.utils.text import dedupe, truncate
-
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.store.base import BaseStore
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +56,30 @@ class CodingAgentPersistence:
 @dataclass
 class MemoryMaintenanceStats:
     checkpoint_threads_deleted: int = 0
+    checkpoint_rows_deleted: int = 0
+    checkpoint_writes_deleted: int = 0
     store_items_deleted: int = 0
     duplicate_items_deleted: int = 0
     namespaces_scanned: int = 0
-    errors: list[str] | None = None
-
-    def __post_init__(self) -> None:
-        if self.errors is None:
-            self.errors = []
+    database_bytes_before: dict[str, int] = field(default_factory=dict)
+    database_bytes_after: dict[str, int] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def total_deleted(self) -> int:
         return (
             self.checkpoint_threads_deleted
+            + self.checkpoint_rows_deleted
+            + self.checkpoint_writes_deleted
             + self.store_items_deleted
             + self.duplicate_items_deleted
+        )
+
+    @property
+    def bytes_reclaimed(self) -> int:
+        return sum(
+            max(0, before - self.database_bytes_after.get(name, before))
+            for name, before in self.database_bytes_before.items()
         )
 
 
@@ -90,6 +98,9 @@ _REQUEST_STOP_WORDS = {
     "update",
     "with",
 }
+_CHECKPOINTS_TABLE = "checkpoints"
+_WRITES_TABLE = "writes"
+_SQLITE_DELETE_BATCH_SIZE = 500
 
 
 def _namespace_segment(
@@ -213,6 +224,48 @@ def _interval_due(
     return last is None or now - last >= interval
 
 
+def _sqlite_table_names(conn: sqlite3.Connection) -> set[str]:
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )
+    try:
+        return {str(row[0]) for row in cursor.fetchall()}
+    finally:
+        cursor.close()
+
+
+def _ensure_checkpoint_schema(checkpointer: BaseCheckpointSaver) -> None:
+    """Initialize and verify the schema used by LangGraph's SQLite saver.
+
+    ``checkpointer`` is the Python saver object, not a table name. Current
+    ``SqliteSaver`` releases use the ``checkpoints`` and ``writes`` tables.
+    Calling ``setup`` is idempotent and prevents maintenance from querying a new
+    database before the saver has created those tables.
+    """
+
+    setup = getattr(checkpointer, "setup", None)
+    if callable(setup):
+        setup()
+
+    conn = getattr(checkpointer, "conn", None)
+    if conn is None:
+        return
+
+    lock = getattr(checkpointer, "lock", None)
+    tables = (
+        _sqlite_table_names(conn)
+        if lock is None
+        else _with_lock(lock, lambda: _sqlite_table_names(conn))
+    )
+    missing = {_CHECKPOINTS_TABLE, _WRITES_TABLE} - tables
+    if missing:
+        found = ", ".join(sorted(tables)) or "none"
+        raise RuntimeError(
+            "LangGraph checkpoint schema is incomplete after SqliteSaver.setup(); "
+            f"missing {', '.join(sorted(missing))}; found tables: {found}"
+        )
+
+
 def _latest_checkpoint_activity(
     checkpointer: BaseCheckpointSaver,
 ) -> dict[str, datetime]:
@@ -227,6 +280,7 @@ def _latest_checkpoint_activity(
     lock = getattr(checkpointer, "lock", None)
 
     if conn is not None and serde is not None:
+        _ensure_checkpoint_schema(checkpointer)
         query = """
             WITH latest AS (
                 SELECT thread_id, MAX(checkpoint_id) AS checkpoint_id
@@ -312,6 +366,115 @@ def _prune_checkpoint_threads(
         except Exception as exc:
             logger.warning("Failed to delete checkpoint thread %s: %s", thread_id, exc)
     return deleted
+
+
+def _batched(
+    values: list[tuple[str, str, str]],
+    size: int = _SQLITE_DELETE_BATCH_SIZE,
+) -> Iterator[list[tuple[str, str, str]]]:
+    for start in range(0, len(values), max(1, size)):
+        yield values[start : start + max(1, size)]
+
+
+def _prune_checkpoint_history(
+    checkpointer: BaseCheckpointSaver,
+    cfg: CodingAgentSettings,
+) -> tuple[int, int]:
+    """Bound checkpoint rows inside active threads.
+
+    Whole-thread retention alone cannot control a long-lived desktop session.
+    LangGraph orders checkpoint IDs newest-first itself, so the same ordering is
+    used here to preserve the latest rows for every thread/namespace pair.
+    """
+
+    conn = getattr(checkpointer, "conn", None)
+    if conn is None:
+        return 0, 0
+
+    _ensure_checkpoint_schema(checkpointer)
+    lock = getattr(checkpointer, "lock", None)
+    keep_rows = max(1, int(cfg.memory_checkpoint_max_rows_per_thread))
+
+    def prune() -> tuple[int, int]:
+        cursor = conn.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY thread_id, checkpoint_ns
+                        ORDER BY checkpoint_id DESC
+                    ) AS checkpoint_rank
+                FROM checkpoints
+            )
+            SELECT thread_id, checkpoint_ns, checkpoint_id
+            FROM ranked
+            WHERE checkpoint_rank > ?
+            """,
+            (keep_rows,),
+        )
+        try:
+            stale_rows = [
+                (str(thread_id), str(checkpoint_ns), str(checkpoint_id))
+                for thread_id, checkpoint_ns, checkpoint_id in cursor.fetchall()
+            ]
+        finally:
+            cursor.close()
+
+        checkpoint_rows_deleted = 0
+        checkpoint_writes_deleted = 0
+
+        try:
+            for batch in _batched(stale_rows):
+                before_writes = conn.total_changes
+                conn.executemany(
+                    """
+                    DELETE FROM writes
+                    WHERE thread_id = ?
+                      AND checkpoint_ns = ?
+                      AND checkpoint_id = ?
+                    """,
+                    batch,
+                )
+                checkpoint_writes_deleted += conn.total_changes - before_writes
+
+                before_checkpoints = conn.total_changes
+                conn.executemany(
+                    """
+                    DELETE FROM checkpoints
+                    WHERE thread_id = ?
+                      AND checkpoint_ns = ?
+                      AND checkpoint_id = ?
+                    """,
+                    batch,
+                )
+                checkpoint_rows_deleted += conn.total_changes - before_checkpoints
+
+            # Clean up writes left behind by interrupted/older saver operations.
+            before_orphans = conn.total_changes
+            conn.execute(
+                """
+                DELETE FROM writes AS w
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM checkpoints AS c
+                    WHERE c.thread_id = w.thread_id
+                      AND c.checkpoint_ns = w.checkpoint_ns
+                      AND c.checkpoint_id = w.checkpoint_id
+                )
+                """
+            )
+            checkpoint_writes_deleted += conn.total_changes - before_orphans
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        return checkpoint_rows_deleted, checkpoint_writes_deleted
+
+    return prune() if lock is None else _with_lock(lock, prune)
 
 
 def _memory_value(item: Any) -> dict[str, Any]:
@@ -538,6 +701,10 @@ def _run_memory_maintenance(
             cfg,
             now=now,
         )
+        (
+            stats.checkpoint_rows_deleted,
+            stats.checkpoint_writes_deleted,
+        ) = _prune_checkpoint_history(checkpointer, cfg)
     except Exception as exc:
         stats.errors.append(f"Checkpoint maintenance failed: {exc}")
 
@@ -545,15 +712,33 @@ def _run_memory_maintenance(
     return stats
 
 
-def _compact_sqlite_file(path: Path) -> None:
+def _sqlite_storage_stats(path: Path) -> tuple[int, int]:
+    """Return current file bytes and bytes held by SQLite's free-page list."""
+
     if not path.exists():
-        return
+        return 0, 0
 
     with sqlite3.connect(str(path), timeout=30) as conn:
+        page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+        free_pages = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+    return path.stat().st_size, page_size * free_pages
+
+
+def _compact_sqlite_file(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        return 0, 0
+
+    before = path.stat().st_size
+    # VACUUM must run outside a transaction. Both LangGraph connections are closed
+    # before this helper is called, so an exclusive rebuild is safe here.
+    with sqlite3.connect(str(path), timeout=30, isolation_level=None) as conn:
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("PRAGMA optimize")
+        checkpoint_result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint_result and int(checkpoint_result[0]) != 0:
+            raise RuntimeError("WAL checkpoint remained busy; compaction was deferred")
         conn.execute("VACUUM")
+        conn.execute("PRAGMA optimize")
+    return before, path.stat().st_size
 
 
 def _maybe_compact_databases(
@@ -571,28 +756,74 @@ def _maybe_compact_databases(
         interval=timedelta(days=max(1, int(cfg.memory_vacuum_interval_days))),
         now=now,
     )
-    if not due:
+    # Reclaim pages immediately after retention deletes. The interval only gates
+    # opportunistic compaction when no rows were removed in this pass.
+    if not due and stats.total_deleted <= 0:
         return False
 
     paths = [
-        Path(cfg.memory_checkpoint_db_path).expanduser().resolve(),
-        Path(cfg.memory_store_db_path).expanduser().resolve(),
+        (
+            Path(cfg.memory_checkpoint_db_path).expanduser().resolve(),
+            bool(
+                stats.checkpoint_threads_deleted
+                or stats.checkpoint_rows_deleted
+                or stats.checkpoint_writes_deleted
+            ),
+        ),
+        (
+            Path(cfg.memory_store_db_path).expanduser().resolve(),
+            bool(stats.store_items_deleted or stats.duplicate_items_deleted),
+        ),
     ]
     min_bytes = max(0, int(cfg.memory_vacuum_min_db_bytes))
-    should_run = stats.total_deleted > 0 or any(
-        path.exists() and path.stat().st_size >= min_bytes for path in paths
-    )
-    if not should_run:
-        return False
 
     ran = False
-    for path in paths:
+    for path, path_had_deletes in paths:
         try:
-            _compact_sqlite_file(path)
+            file_bytes, reclaimable_bytes = _sqlite_storage_stats(path)
+            if reclaimable_bytes <= 0:
+                continue
+            if not path_had_deletes and file_bytes < min_bytes:
+                continue
+
+            before, after = _compact_sqlite_file(path)
+            stats.database_bytes_before[path.name] = before
+            stats.database_bytes_after[path.name] = after
             ran = True
         except Exception as exc:
-            logger.warning("SQLite compaction failed for %s: %s", path, exc)
+            message = f"SQLite compaction failed for {path}: {exc}"
+            stats.errors.append(message)
+            logger.warning(message)
     return ran
+
+
+def _maintenance_is_due(
+    cfg: CodingAgentSettings,
+    maintenance_state: dict[str, Any],
+    *,
+    now: datetime,
+) -> bool:
+    if not cfg.memory_maintenance_enabled:
+        return False
+
+    previous_errors = maintenance_state.get("last_errors")
+    if isinstance(previous_errors, list) and previous_errors:
+        return _interval_due(
+            maintenance_state.get("last_maintenance_attempt_at")
+            or maintenance_state.get("last_maintenance_at"),
+            interval=timedelta(
+                minutes=max(1, int(cfg.memory_maintenance_retry_minutes))
+            ),
+            now=now,
+        )
+
+    return _interval_due(
+        maintenance_state.get("last_maintenance_at"),
+        interval=timedelta(
+            hours=max(1, int(cfg.memory_maintenance_interval_hours))
+        ),
+        now=now,
+    )
 
 
 @contextmanager
@@ -624,17 +855,18 @@ def coding_agent_persistence(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     store_path.parent.mkdir(parents=True, exist_ok=True)
 
-    setup_resources = cfg.memory_setup if setup is None else setup
+    # ``setup`` is retained for call-site compatibility. Schema initialization is
+    # intentionally unconditional: maintenance can issue direct SQL before the
+    # saver/store's first regular operation, and both setup methods are idempotent.
+    _ = setup
     index_config = _memory_index_config(cfg)
 
     now = _utc_now()
     maintenance_state_path = Path(cfg.memory_maintenance_state_path).expanduser().resolve()
     maintenance_state = _load_maintenance_state(maintenance_state_path)
-    maintenance_due = bool(cfg.memory_maintenance_enabled) and _interval_due(
-        maintenance_state.get("last_maintenance_at"),
-        interval=timedelta(
-            hours=max(1, int(cfg.memory_maintenance_interval_hours))
-        ),
+    maintenance_due = _maintenance_is_due(
+        cfg,
+        maintenance_state,
         now=now,
     )
     maintenance_stats = MemoryMaintenanceStats()
@@ -655,9 +887,8 @@ def coding_agent_persistence(
 
             store = stack.enter_context(store_context)
 
-            if setup_resources:
-                checkpointer.setup()
-                store.setup()
+            _ensure_checkpoint_schema(checkpointer)
+            store.setup()
 
             if maintenance_due:
                 try:
@@ -674,6 +905,9 @@ def coding_agent_persistence(
                         )
                 except Exception as exc:
                     # Memory cleanup must never prevent the coding agent from running.
+                    maintenance_stats.errors.append(
+                        f"Unexpected memory maintenance failure: {exc}"
+                    )
                     logger.warning("Coding-agent memory maintenance failed: %s", exc)
 
             yield CodingAgentPersistence(
@@ -691,19 +925,45 @@ def coding_agent_persistence(
             )
             new_state = {
                 **maintenance_state,
-                "last_maintenance_at": completed_at.isoformat(),
+                "last_maintenance_attempt_at": completed_at.isoformat(),
                 "last_checkpoint_threads_deleted": maintenance_stats.checkpoint_threads_deleted,
+                "last_checkpoint_rows_deleted": maintenance_stats.checkpoint_rows_deleted,
+                "last_checkpoint_writes_deleted": maintenance_stats.checkpoint_writes_deleted,
                 "last_store_items_deleted": maintenance_stats.store_items_deleted,
                 "last_duplicate_items_deleted": maintenance_stats.duplicate_items_deleted,
                 "last_namespaces_scanned": maintenance_stats.namespaces_scanned,
+                "last_database_bytes_before": maintenance_stats.database_bytes_before,
+                "last_database_bytes_after": maintenance_stats.database_bytes_after,
+                "last_bytes_reclaimed": maintenance_stats.bytes_reclaimed,
                 "last_errors": maintenance_stats.errors[-10:],
             }
+            if not maintenance_stats.errors:
+                new_state["last_maintenance_at"] = completed_at.isoformat()
             if vacuumed:
                 new_state["last_vacuum_at"] = completed_at.isoformat()
             try:
                 _write_maintenance_state(maintenance_state_path, new_state)
             except OSError as exc:
                 logger.warning("Could not persist memory maintenance state: %s", exc)
+
+
+def initialize_coding_agent_memory(
+    cfg: CodingAgentSettings = default_settings,
+) -> bool:
+    """Create and validate desktop memory storage during application startup.
+
+    The first backend launch is the reliable installation boundary: it runs as the
+    signed-in user and can write to the configured per-user data directory. Opening
+    the persistence context also retries failed maintenance and compacts databases
+    after retention work completes.
+    """
+
+    if not cfg.memory_enabled:
+        return False
+
+    with coding_agent_persistence(cfg, setup=True):
+        pass
+    return True
 
 
 def _runtime_store(runtime: Any) -> BaseStore | None:

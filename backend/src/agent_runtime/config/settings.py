@@ -1,8 +1,8 @@
 import os
+from typing import List, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Literal
 
 # from .secrets import get_secret_json
 
@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     # App API key
     agent_runtime_api_key: str | None = Field(default=None, alias="AGENT_RUNTIME_API_KEY")
     agent_runtime_secret_arn: str | None = Field(default=None, alias="AGENT_RUNTIME_SECRET_ARN")
+    agent_runtime_initialize_memory_on_startup: bool = Field(
+        default=True,
+        alias="AGENT_RUNTIME_INITIALIZE_MEMORY_ON_STARTUP",
+    )
+    agent_runtime_memory_init_strict: bool = Field(
+        default=True,
+        alias="AGENT_RUNTIME_MEMORY_INIT_STRICT",
+    )
 
     # GitHub repository integration
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
