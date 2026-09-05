@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,12 +43,19 @@ def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-# _MEMORY_DB_URI = os.getenv("CODING_AGENT_MEMORY_DB_URI") or os.getenv("DATABASE_URL")
+# Keep mutable runtime data outside the application/install directory by default.
+# A packaged Electron process should set AGENT_RUNTIME_DATA_DIR to app.getPath("userData").
+_RUNTIME_DATA_DIR = Path(
+    os.getenv(
+        "AGENT_RUNTIME_DATA_DIR",
+        "~/.agent-runtime",
+    )
+).expanduser()
 
 _MEMORY_DIR = Path(
     os.getenv(
         "CODING_AGENT_MEMORY_DIR",
-        ".agent_runtime/memory",
+        str(_RUNTIME_DATA_DIR / "memory"),
     )
 ).expanduser()
 
@@ -278,6 +286,10 @@ class CodingAgentSettings:
         "CODING_AGENT_MEMORY_MAINTENANCE_INTERVAL_HOURS",
         24,
     )
+    memory_maintenance_retry_minutes: int = _env_int(
+        "CODING_AGENT_MEMORY_MAINTENANCE_RETRY_MINUTES",
+        15,
+    )
     memory_maintenance_state_path: Path = Path(
         os.getenv(
             "CODING_AGENT_MEMORY_MAINTENANCE_STATE",
@@ -294,6 +306,13 @@ class CodingAgentSettings:
     memory_checkpoint_max_threads: int = _env_int(
         "CODING_AGENT_MEMORY_CHECKPOINT_MAX_THREADS",
         100,
+    )
+    # A recently active thread can otherwise grow forever because whole-thread
+    # retention never selects it. Keep a bounded number of recent checkpoints for
+    # each (thread_id, checkpoint_ns) pair.
+    memory_checkpoint_max_rows_per_thread: int = _env_int(
+        "CODING_AGENT_MEMORY_CHECKPOINT_MAX_ROWS_PER_THREAD",
+        50,
     )
 
     # Durable outcomes are compact and more valuable than checkpoints, so retain
@@ -353,7 +372,7 @@ class CodingAgentSettings:
     )
     memory_vacuum_min_db_bytes: int = _env_int(
         "CODING_AGENT_MEMORY_VACUUM_MIN_DB_BYTES",
-        10_000_000,
+        1_048_576,
     )
 
 

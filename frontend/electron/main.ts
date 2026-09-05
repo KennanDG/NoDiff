@@ -1,5 +1,5 @@
 import path from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   app,
@@ -18,6 +18,21 @@ type DesktopDirectoryPickerOptions = {
   title?: string;
   defaultPath?: string;
 };
+
+function configureRuntimeDataPaths() {
+  const runtimeDataDirectory = app.getPath("userData");
+  const memoryDirectory = path.join(runtimeDataDirectory, "memory");
+
+  mkdirSync(memoryDirectory, { recursive: true });
+
+  // A managed backend inherits these paths. The defaults keep all mutable state
+  // outside read-only application resources after an NSIS, DMG, or AppImage install.
+  process.env.AGENT_RUNTIME_DATA_DIR ??= runtimeDataDirectory;
+  process.env.CODING_AGENT_MEMORY_DIR ??= memoryDirectory;
+  process.env.CODING_AGENT_MEMORY_ENABLED ??= "true";
+  process.env.CODING_AGENT_MEMORY_SETUP ??= "true";
+  process.env.AGENT_RUNTIME_INITIALIZE_MEMORY_ON_STARTUP ??= "true";
+}
 
 function existingDirectory(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
@@ -40,12 +55,14 @@ function registerDesktopIpc() {
     "desktop:select-directory",
     async (event, options?: DesktopDirectoryPickerOptions) => {
       const owner = BrowserWindow.fromWebContents(event.sender);
-      const requestedTitle = typeof options?.title === "string" ? options.title.trim() : "";
+      const requestedTitle =
+        typeof options?.title === "string" ? options.title.trim() : "";
       const dialogOptions: OpenDialogOptions = {
         title: requestedTitle.slice(0, 200) || "Select repository root",
         // A WSL path saved by an older build is not usable by a native Windows
         // dialog. Fall back to Documents until the user selects a Windows path.
-        defaultPath: existingDirectory(options?.defaultPath) ?? app.getPath("documents"),
+        defaultPath:
+          existingDirectory(options?.defaultPath) ?? app.getPath("documents"),
         properties: ["openDirectory"],
       };
 
@@ -88,6 +105,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  configureRuntimeDataPaths();
   registerDesktopIpc();
   createWindow();
 
