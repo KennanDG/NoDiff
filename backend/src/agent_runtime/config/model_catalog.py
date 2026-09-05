@@ -263,7 +263,36 @@ def _matches_capability(
     if provider == "anthropic":
         return capability in {"chat", "vision"}    
     if provider == "google":
-        return capability in {"chat", "vision"}
+        raw_methods = (
+            item.get("supportedGenerationMethods")
+            or item.get("supportedActions")
+            or item.get("supported_actions")
+            or []
+        )
+        methods = {
+            str(method).replace("_", "").lower()
+            for method in raw_methods
+            if isinstance(method, str)
+        }
+        if methods and "generatecontent" not in methods:
+            return False
+
+        # The Models API includes embeddings, Live API, speech, and media
+        # generators alongside normal Gemini chat models. Those require
+        # different clients even when they expose another generation action.
+        unsupported_chat_markers = (
+            "embedding",
+            "-live",
+            "transcribe",
+            "-tts",
+            "-image",
+            "computer-use",
+        )
+        return (
+            capability in {"chat", "vision"}
+            and lowered.startswith("gemini-")
+            and not any(marker in lowered for marker in unsupported_chat_markers)
+        )
 
     if provider == "deepseek":
         return capability == "chat"
@@ -316,8 +345,20 @@ def _extract_models(
 
     models: list[str] = []
     for item in raw_data:
-        model_id = _model_id(item)
-        if model_id is None or not isinstance(item, dict):
+        if not isinstance(item, dict):
+            continue
+        if provider == "google":
+            # Google documents baseModelId as the value to pass to generation
+            # requests. Fall back to the resource name for older responses.
+            raw_google_id = item.get("baseModelId") or item.get("base_model_id")
+            model_id = (
+                raw_google_id.strip()
+                if isinstance(raw_google_id, str) and raw_google_id.strip()
+                else _model_id(item)
+            )
+        else:
+            model_id = _model_id(item)
+        if model_id is None:
             continue
         if provider == "google" and model_id.startswith("models/"):
             model_id = model_id.removeprefix("models/")

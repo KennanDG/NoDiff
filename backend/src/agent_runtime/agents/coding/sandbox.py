@@ -18,6 +18,7 @@ SANDBOX_IGNORE_DIRS = {
     "dist",
     "node_modules",
     "venv",
+    ".agent-runtime",
 }
 
 
