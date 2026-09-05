@@ -44,6 +44,8 @@ from agent_runtime.api.api_schemas import (
     SkillSummary,
     ToolSummary,
     ToolReviewResponse,
+    LocalRepositorySessionResponse,
+    LocalRepositorySessionUpdateRequest,
 )
 from agent_runtime.config.constants import (
     AGENT_RUNTIME_ROOT,
@@ -78,6 +80,59 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 def _coding_runtime_path() -> Path:
     base = Path(config_settings.runtime_agent_config_path).expanduser().resolve()
     return base.with_name(f"{base.stem}-coding-runtime{base.suffix}")
+
+
+def _local_repository_session_path() -> Path:
+    return Path(config_settings.local_repository_session_path).expanduser().resolve()
+
+
+def _validated_local_repository_root(value: str, *, saved: bool = False) -> Path | None:
+    try:
+        root = Path(value).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        if saved:
+            return None
+        raise HTTPException(status_code=400, detail="Repository root could not be resolved.") from exc
+
+    if not root.exists():
+        if saved:
+            return None
+        raise HTTPException(status_code=404, detail="Repository root does not exist.")
+    if not root.is_dir():
+        if saved:
+            return None
+        raise HTTPException(status_code=400, detail="Repository root must be a directory.")
+    if not os.access(root, os.R_OK):
+        if saved:
+            return None
+        raise HTTPException(status_code=403, detail="Repository root is not accessible.")
+    return root
+
+
+def _load_local_repository_session() -> None:
+    path = _local_repository_session_path()
+    if not path.exists():
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    value = raw.get("repo_root") if isinstance(raw, dict) else None
+    if not isinstance(value, str):
+        return
+
+    root = _validated_local_repository_root(value, saved=True)
+    if root is not None:
+        config_settings.last_opened_local_repository = str(root)
+
+
+def _save_local_repository_session(root: Path) -> None:
+    config_settings.last_opened_local_repository = str(root)
+    _atomic_write(
+        _local_repository_session_path(),
+        json.dumps({"repo_root": str(root)}, indent=2) + "\n",
+    )
 
 
 def _coding_runtime_snapshot() -> dict[str, int]:
@@ -128,6 +183,7 @@ def _github_configuration_snapshot() -> dict[str, Any]:
 
 
 _load_coding_runtime_configuration()
+_load_local_repository_session()
 
 
 def _safe_agent_dir(mapping: dict[AgentKind, Path], agent: AgentKind) -> Path:
@@ -630,6 +686,34 @@ def _validate_quarantined_tool_source(name: str, source: str) -> str:
     return normalized
 
 
+@router.get("/local-repository", response_model=LocalRepositorySessionResponse)
+def get_local_repository_session() -> LocalRepositorySessionResponse:
+    saved_root = config_settings.last_opened_local_repository
+    if not saved_root:
+        return LocalRepositorySessionResponse(repo_root=None, available=False)
+
+    root = _validated_local_repository_root(saved_root, saved=True)
+    if root is None:
+        config_settings.last_opened_local_repository = None
+        return LocalRepositorySessionResponse(repo_root=None, available=False)
+
+    canonical_root = str(root)
+    config_settings.last_opened_local_repository = canonical_root
+    return LocalRepositorySessionResponse(repo_root=canonical_root, available=True)
+
+
+@router.put("/local-repository", response_model=LocalRepositorySessionResponse)
+def update_local_repository_session(
+    request: LocalRepositorySessionUpdateRequest,
+) -> LocalRepositorySessionResponse:
+    root = _validated_local_repository_root(request.repo_root)
+    if root is None:
+        raise HTTPException(status_code=400, detail="Repository root is unavailable.")
+
+    _save_local_repository_session(root)
+    return LocalRepositorySessionResponse(repo_root=str(root), available=True)
+
+
 @router.get("/agent-configuration")
 def get_agent_configuration() -> dict[str, Any]:
     return {
@@ -878,7 +962,7 @@ def approve_tool(agent: AgentKind, name: str) -> ToolSummary:
     # Import/signature-check the candidate outside custom_approved first. This keeps
     # approval atomic from the runtime registry's perspective: a concurrent agent
     # run can see either the pending file or the fully validated approved file.
-    with tempfile.TemporaryDirectory(prefix="ai-agents-tool-approval-") as temporary_dir:
+    with tempfile.TemporaryDirectory(prefix="agent-runtime-tool-approval-") as temporary_dir:
         candidate_path = Path(temporary_dir) / pending_path.name
         _atomic_write(candidate_path, source)
         candidate_registry = _candidate_registry(agent, Path(temporary_dir)).load()

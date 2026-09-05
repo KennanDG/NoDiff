@@ -28,9 +28,11 @@ import {
   fetchGitHubStatus,
   fetchRepositoryFile,
   fetchRepositoryTree,
+  fetchSavedLocalRepositoryRoot,
   importGitHubRepository,
   pullGitHubBranch,
   pushGitHubBranch,
+  saveLocalRepositoryRoot,
   testGitHubConnection,
   type GitHubBranchSummary,
   type GitHubRepositoryStatus,
@@ -657,7 +659,17 @@ const App = () => {
     clearGitHubActionFeedback();
 
     try {
-      const resolvedRoot = await loadRepository(normalizedRoot);
+      const savedRoot = await saveLocalRepositoryRoot({
+        apiBaseUrl,
+        apiKey,
+        repoRoot: normalizedRoot,
+      });
+      if (!savedRoot.repo_root) {
+        setGitHubActionError("The selected directory could not be saved by the backend.");
+        return false;
+      }
+
+      const resolvedRoot = await loadRepository(savedRoot.repo_root);
       if (!resolvedRoot) {
         setGitHubActionError("The selected directory could not be opened by the backend.");
         return false;
@@ -681,16 +693,24 @@ const App = () => {
 
   const browseLocalRepository = useCallback(async () => {
     const selectDirectory = window.desktop?.selectDirectory;
-    if (!selectDirectory) return null;
+    if (!selectDirectory) {
+      setGitHubActionError("Directory browsing requires the desktop bridge.");
+      return null;
+    }
 
-    const selectedPath = await selectDirectory({
-      title: "Select repository root",
-      defaultPath: localRepoRoot,
-    });
-    if (!selectedPath) return null;
+    try {
+      const selectedPath = await selectDirectory({
+        title: "Select repository root",
+        defaultPath: localRepoRoot,
+      });
+      if (!selectedPath) return null;
 
-    const selected = await selectLocalRepository(selectedPath);
-    return selected ? selectedPath : null;
+      const selected = await selectLocalRepository(selectedPath);
+      return selected ? selectedPath : null;
+    } catch (error) {
+      setGitHubActionError(error instanceof Error ? error.message : "Failed to select a local directory.");
+      return null;
+    }
   }, [localRepoRoot, selectLocalRepository]);
 
   const switchBranch = useCallback(async (branchName: string) => {
@@ -876,9 +896,27 @@ const App = () => {
   }, [currentBranch, selectedGitHubRepository]);
 
   useEffect(() => {
-    void loadRepository(configuredRepoRoot).then((resolvedRoot) => {
-      if (resolvedRoot) setLocalRepoRoot(resolvedRoot);
-    });
+    const restoreLocalRepository = async () => {
+      try {
+        const savedRoot = await fetchSavedLocalRepositoryRoot({ apiBaseUrl, apiKey });
+        const targetRoot = savedRoot.available && savedRoot.repo_root
+          ? savedRoot.repo_root
+          : configuredRepoRoot;
+        let resolvedRoot = await loadRepository(targetRoot);
+
+        // A repository can disappear or become temporarily unreadable after it
+        // was saved. Keep startup usable by falling back to the configured root.
+        if (!resolvedRoot && targetRoot !== configuredRepoRoot) {
+          resolvedRoot = await loadRepository(configuredRepoRoot);
+        }
+
+        if (resolvedRoot) setLocalRepoRoot(resolvedRoot);
+      } catch (error) {
+        setRepoError(error instanceof Error ? error.message : "Failed to restore the saved local repository.");
+      }
+    };
+
+    void restoreLocalRepository();
     void refreshGitHubRepositories();
   }, [loadRepository, refreshGitHubRepositories]);
 

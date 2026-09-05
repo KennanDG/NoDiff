@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
@@ -15,6 +16,46 @@ from agent_runtime.config.runtime_configuration import (
     runtime_agent_configuration,
 )
 from agent_runtime.config.settings import settings
+
+
+_GOOGLE_GENAI_MINIMUM_VERSION = (4, 3, 0)
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    """Return the numeric release prefix without requiring packaging at runtime."""
+
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", value)
+    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)
+
+
+def _require_current_google_integration() -> None:
+    """Require the consolidated Google SDK path used by current Gemini models."""
+
+    try:
+        installed = version("langchain-google-genai")
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Google provider requires langchain-google-genai>=4.3.0. "
+            "Install it with: pip install -U 'langchain-google-genai>=4.3.0,<5'"
+        ) from exc
+
+    if _version_tuple(installed) < _GOOGLE_GENAI_MINIMUM_VERSION:
+        raise RuntimeError(
+            "Google provider requires langchain-google-genai>=4.3.0 for current "
+            f"Gemini models; found {installed}. Upgrade it with: "
+            "pip install -U 'langchain-google-genai>=4.3.0,<5'"
+        )
+
+
+def _google_model_name(model_name: str) -> str:
+    """Normalize a Models API resource name to the SDK's model ID form."""
+
+    normalized = model_name.strip()
+    if normalized.startswith("models/"):
+        normalized = normalized.removeprefix("models/")
+    if not normalized:
+        raise ValueError("Google model name must not be empty.")
+    return normalized
 
 
 def _require_api_key(provider: ChatProvider) -> str:
@@ -85,16 +126,22 @@ def build_chat_model(
         return ChatAnthropic(model=model_name, api_key=api_key, **optional)
 
     if provider == "google":
+        _require_current_google_integration()
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-not-found]
         except ImportError:
             raise RuntimeError(
                 "Google provider requires langchain-google-genai. Install it with pip."
             )
+        # This application's Google API keys come from Google AI Studio. Force
+        # the Gemini Developer API so GOOGLE_GENAI_USE_VERTEXAI, Cloud project,
+        # or ADC environment state cannot silently route model calls to Vertex.
+        # The catalog uses the Developer API as well, so discovery and invocation
+        # now address the same backend.
         return ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=api_key,
-            client_options={"api_endpoint": runtime_agent_configuration.provider_base_url(provider)},
+            model=_google_model_name(model_name),
+            api_key=api_key,
+            vertexai=False,
             **optional,
         )
 

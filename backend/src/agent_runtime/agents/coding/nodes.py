@@ -1496,17 +1496,3 @@ def web_search_node(state: CodingAgentState) -> CodingAgentState:
             "errors": [*state.get("errors", []), f"Web search failed: {exc}"],
             "status": "web_search_failed",
         }
-
-
-
-
-def gmail_access_node(state: CodingAgentState) -> CodingAgentState:
-    """
-    Perform Gmail access if the selected skill is gmail_access.
-    Currently a placeholder.
-    """
-    if "gmail_access" not in set(state.get("selected_skills") or [state.get("selected_skill", "")]):
-        return {"status": "gmail_access_skipped"}
-    # Placeholder: log that gmail access was triggered
-    # In future, invoke gmail API here.
-    return {"status": "gmail_access_completed"}

@@ -88,7 +88,6 @@ SKILL_ROUTER_SYSTEM_PROMPT = dedent(
     - Use debug for errors, tracebacks, broken behavior, and diagnosis-heavy tasks.
     - Use tests for requests primarily about adding, fixing, or improving tests.
     - Use web_search only when the task explicitly needs current external information.
-    - Use gmail_access only when the task explicitly needs Gmail access.
     - Do not add implement_change merely as filler when a more specific skill already covers the same behavior.
     - Combine skills when the request truly has multiple concerns, such as debugging plus tests, or frontend work plus styling.
     - Lower confidence when the request is vague or the selected skills conflict.
@@ -370,7 +369,6 @@ def build_skill_router_user_prompt(
         - Put the primary skill first. Supplemental skills must contribute distinct guidance.
         - Base the decision on each skill purpose and the user's explicit intent.
         - Do not include web_search unless the request requires internet/current external data.
-        - Do not include gmail_access unless the request requires Gmail.
         - For mixed requests, include complementary skills rather than forcing one broad skill.
         - Prefer fewer skills when one skill already covers the task.
         - Include a concise reason and at most three unselected alternatives.
