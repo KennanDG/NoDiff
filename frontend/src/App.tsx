@@ -43,8 +43,23 @@ import type { AgentMessage, AgentRunState, ChangeStatus, FileChange, RepositoryF
 
 const apiBaseUrl = import.meta.env.VITE_AI_AGENTS_API_BASE ?? "http://0.0.0.0:8000";
 const apiKey = import.meta.env.VITE_AI_AGENTS_API_KEY ?? "";
-const configuredRepoRoot : string = import.meta.env.VITE_CODING_AGENT_REPO_ROOT ?? ".";
-const configuredWorkspaceRoot : string = import.meta.env.VITE_CODING_AGENT_WORKSPACE_ROOT ?? configuredRepoRoot;
+
+const configuredRepoRootRaw = (import.meta.env.VITE_CODING_AGENT_REPO_ROOT ?? "").trim();
+const configuredWorkspaceRootRaw = (import.meta.env.VITE_CODING_AGENT_WORKSPACE_ROOT ?? "").trim();
+const nativeWindowsDesktop =
+  Boolean(window.desktop) && navigator.userAgent.toLowerCase().includes("windows");
+
+// Do not let an old WSL/Linux build-time default become the first repository shown
+// by the native Windows desktop app. Explicit Windows paths are still honored.
+const configuredRepoRoot =
+  nativeWindowsDesktop && configuredRepoRootRaw.startsWith("/")
+    ? ""
+    : configuredRepoRootRaw;
+
+const configuredWorkspaceRoot =
+  nativeWindowsDesktop && configuredWorkspaceRootRaw.startsWith("/")
+    ? configuredRepoRoot
+    : configuredWorkspaceRootRaw || configuredRepoRoot;
 
 type DivideConquerRunState = AgentRunState & {
   selectedSkills?: string[];
@@ -566,6 +581,10 @@ const App = () => {
   }, []);
 
   const refreshRepository = useCallback(async () => {
+    if (!repoRoot.trim()) {
+      setRepoError("Select a repository folder first.");
+      return;
+    }
     await loadRepository(repoRoot);
   }, [loadRepository, repoRoot]);
 
@@ -701,7 +720,7 @@ const App = () => {
     try {
       const selectedPath = await selectDirectory({
         title: "Select repository root",
-        defaultPath: localRepoRoot,
+        defaultPath: localRepoRoot || undefined,
       });
       if (!selectedPath) return null;
 
@@ -896,22 +915,44 @@ const App = () => {
   }, [currentBranch, selectedGitHubRepository]);
 
   useEffect(() => {
+    const clearRepositorySelection = () => {
+      setRepoRoot("");
+      setLocalRepoRoot("");
+      setRepoEntries([]);
+      setActivePath(null);
+      setActiveFile(null);
+      setRepoError(null);
+    };
+
     const restoreLocalRepository = async () => {
       try {
         const savedRoot = await fetchSavedLocalRepositoryRoot({ apiBaseUrl, apiKey });
-        const targetRoot = savedRoot.available && savedRoot.repo_root
-          ? savedRoot.repo_root
-          : configuredRepoRoot;
-        let resolvedRoot = await loadRepository(targetRoot);
 
-        // A repository can disappear or become temporarily unreadable after it
-        // was saved. Keep startup usable by falling back to the configured root.
-        if (!resolvedRoot && targetRoot !== configuredRepoRoot) {
-          resolvedRoot = await loadRepository(configuredRepoRoot);
+        // First launch: do not implicitly use "." (the backend launch directory)
+        // and do not invent a repository. Leave the field blank until the user
+        // selects a folder. An explicit, platform-compatible Vite override may
+        // still act as a development default.
+        const targetRoot =
+          savedRoot.available && savedRoot.repo_root
+            ? savedRoot.repo_root
+            : configuredRepoRoot;
+
+        if (!targetRoot) {
+          clearRepositorySelection();
+          return;
         }
 
-        if (resolvedRoot) setLocalRepoRoot(resolvedRoot);
+        const resolvedRoot = await loadRepository(targetRoot);
+        if (resolvedRoot) {
+          setLocalRepoRoot(resolvedRoot);
+          return;
+        }
+
+        // A saved repository may have been deleted or may belong to another
+        // machine/environment. Do not fall back to the process CWD.
+        clearRepositorySelection();
       } catch (error) {
+        clearRepositorySelection();
         setRepoError(error instanceof Error ? error.message : "Failed to restore the saved local repository.");
       }
     };
@@ -1197,6 +1238,19 @@ const App = () => {
 
 
   const runCodingAgent = (request: string, attachedFiles: CodingAgentAttachedFile[] = []) => {
+    if (!repoRoot.trim()) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "agent",
+          body: "Select a local or GitHub repository before starting a coding run.",
+          time: nowLabel(),
+        },
+      ]);
+      return;
+    }
+
     const runRequest = {
       thread_id: newThreadForNextRunRef.current ? null : run.threadId,
       request,

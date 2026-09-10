@@ -13,6 +13,19 @@ import {
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const applicationRoot = path.join(currentDirectory, "..");
 const developmentServerUrl = process.env.VITE_DEV_SERVER_URL;
+const applicationDataDirectory = path.join(app.getPath("appData"), "NoDiff");
+
+// Pin Electron's own profile to the product name before ready. The agent runtime
+// uses a dedicated child so Chromium cache/storage and backend state never mix.
+mkdirSync(applicationDataDirectory, { recursive: true });
+app.setPath("userData", applicationDataDirectory);
+
+const configuredRuntimeDataDirectory =
+  process.env.AGENT_RUNTIME_DATA_DIR?.trim();
+const runtimeDataDirectory = configuredRuntimeDataDirectory
+  ? path.resolve(configuredRuntimeDataDirectory)
+  : path.join(applicationDataDirectory, "agent-runtime");
+const memoryDirectory = path.join(runtimeDataDirectory, "memory");
 
 type DesktopDirectoryPickerOptions = {
   title?: string;
@@ -20,19 +33,46 @@ type DesktopDirectoryPickerOptions = {
 };
 
 function configureRuntimeDataPaths() {
-  const runtimeDataDirectory = app.getPath("userData");
-  const memoryDirectory = path.join(runtimeDataDirectory, "memory");
-
   mkdirSync(memoryDirectory, { recursive: true });
 
-  // A managed backend inherits these paths. The defaults keep all mutable state
-  // outside read-only application resources after an NSIS, DMG, or AppImage install.
-  process.env.AGENT_RUNTIME_DATA_DIR ??= runtimeDataDirectory;
-  process.env.CODING_AGENT_MEMORY_DIR ??= memoryDirectory;
+  // A managed backend inherits one complete, explicit layout. These assignments
+  // happen before any future backend child process is launched.
+  process.env.AGENT_RUNTIME_DATA_DIR = runtimeDataDirectory;
+  process.env.AGENT_RUNTIME_CONFIG_PATH = path.join(
+    runtimeDataDirectory,
+    "runtime-agent-config.json",
+  );
+  process.env.AGENT_RUNTIME_LOCAL_REPOSITORY_SESSION_PATH = path.join(
+    runtimeDataDirectory,
+    "local-repository-session.json",
+  );
+  process.env.GITHUB_WORKSPACE_ROOT = path.join(
+    runtimeDataDirectory,
+    "github-workspaces",
+  );
+  process.env.CODING_AGENT_MEMORY_DIR = memoryDirectory;
+  process.env.CODING_AGENT_MEMORY_CHECKPOINT_DB = path.join(
+    memoryDirectory,
+    "checkpoints.sqlite3",
+  );
+  process.env.CODING_AGENT_MEMORY_STORE_DB = path.join(
+    memoryDirectory,
+    "store.sqlite3",
+  );
+  process.env.CODING_AGENT_MEMORY_EMBEDDING_CACHE_DIR = path.join(
+    memoryDirectory,
+    "fastembed-cache",
+  );
+  process.env.CODING_AGENT_MEMORY_MAINTENANCE_STATE = path.join(
+    memoryDirectory,
+    "maintenance.json",
+  );
   process.env.CODING_AGENT_MEMORY_ENABLED ??= "true";
   process.env.CODING_AGENT_MEMORY_SETUP ??= "true";
   process.env.AGENT_RUNTIME_INITIALIZE_MEMORY_ON_STARTUP ??= "true";
 }
+
+configureRuntimeDataPaths();
 
 function existingDirectory(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
@@ -105,7 +145,6 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  configureRuntimeDataPaths();
   registerDesktopIpc();
   createWindow();
 

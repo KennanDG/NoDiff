@@ -6,17 +6,15 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_runtime.config.settings import settings
 from agent_runtime.config.constants import (
-    ChatProvider,
     PROVIDER_CAPABILITIES,
-    PUBLIC_FIELDS,
     PROVIDER_FIELDS,
+    PROVIDER_SLOT_CAPABILITY,
     PROVIDER_URL_FIELDS,
-    PROVIDER_SLOT_CAPABILITY
+    PUBLIC_FIELDS,
+    ChatProvider,
 )
-
-
+from agent_runtime.config.settings import settings
 
 
 class RuntimeAgentConfigurationStore:
@@ -158,6 +156,7 @@ class RuntimeAgentConfigurationStore:
 
     def public_snapshot(self) -> dict[str, Any]:
         snapshot = {field: getattr(settings, field) for field in PUBLIC_FIELDS}
+        snapshot["runtime_data_directory"] = str(settings.agent_runtime_data_dir)
         snapshot["secrets_configured"] = {
             provider: self.secret_configured(provider)
             for provider in PROVIDER_FIELDS

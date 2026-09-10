@@ -4,9 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from agent_runtime.config.settings import _resolve_runtime_path
+from agent_runtime.config.settings import settings as runtime_settings
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -43,42 +42,30 @@ def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-# Keep mutable runtime data outside the application/install directory by default.
-# A packaged Electron process should set AGENT_RUNTIME_DATA_DIR to app.getPath("userData").
-_RUNTIME_DATA_DIR = Path(
-    os.getenv(
-        "AGENT_RUNTIME_DATA_DIR",
-        "~/.agent-runtime",
-    )
-).expanduser()
+# Use the same canonical root as every other backend setting. A relative expert
+# override is also anchored here, never to whichever directory launched Uvicorn.
+_RUNTIME_DATA_DIR = runtime_settings.agent_runtime_data_dir
 
-_MEMORY_DIR = Path(
-    os.getenv(
-        "CODING_AGENT_MEMORY_DIR",
-        str(_RUNTIME_DATA_DIR / "memory"),
-    )
-).expanduser()
 
-_MEMORY_CHECKPOINT_DB = Path(
-    os.getenv(
-        "CODING_AGENT_MEMORY_CHECKPOINT_DB",
-        str(_MEMORY_DIR / "checkpoints.sqlite3"),
-    )
-).expanduser()
+def _runtime_path(name: str, default: Path) -> Path:
+    raw_value = os.getenv(name)
+    candidate = raw_value.strip() if raw_value and raw_value.strip() else default
+    return _resolve_runtime_path(candidate, _RUNTIME_DATA_DIR)
 
-_MEMORY_STORE_DB = Path(
-    os.getenv(
-        "CODING_AGENT_MEMORY_STORE_DB",
-        str(_MEMORY_DIR / "store.sqlite3"),
-    )
-).expanduser()
 
-_MEMORY_EMBEDDING_CACHE = Path(
-    os.getenv(
-        "CODING_AGENT_MEMORY_EMBEDDING_CACHE_DIR",
-        str(_MEMORY_DIR / "fastembed-cache"),
-    )
-).expanduser()
+_MEMORY_DIR = _runtime_path("CODING_AGENT_MEMORY_DIR", _RUNTIME_DATA_DIR / "memory")
+_MEMORY_CHECKPOINT_DB = _runtime_path(
+    "CODING_AGENT_MEMORY_CHECKPOINT_DB",
+    _MEMORY_DIR / "checkpoints.sqlite3",
+)
+_MEMORY_STORE_DB = _runtime_path(
+    "CODING_AGENT_MEMORY_STORE_DB",
+    _MEMORY_DIR / "store.sqlite3",
+)
+_MEMORY_EMBEDDING_CACHE = _runtime_path(
+    "CODING_AGENT_MEMORY_EMBEDDING_CACHE_DIR",
+    _MEMORY_DIR / "fastembed-cache",
+)
 
 
 @dataclass(frozen=True)
@@ -290,12 +277,10 @@ class CodingAgentSettings:
         "CODING_AGENT_MEMORY_MAINTENANCE_RETRY_MINUTES",
         15,
     )
-    memory_maintenance_state_path: Path = Path(
-        os.getenv(
-            "CODING_AGENT_MEMORY_MAINTENANCE_STATE",
-            str(_MEMORY_DIR / "maintenance.json"),
-        )
-    ).expanduser()
+    memory_maintenance_state_path: Path = _runtime_path(
+        "CODING_AGENT_MEMORY_MAINTENANCE_STATE",
+        _MEMORY_DIR / "maintenance.json",
+    )
 
     # Checkpoints are resumability/debug state, not long-term knowledge. Prune
     # whole inactive threads through LangGraph's delete_thread API.
@@ -377,30 +362,3 @@ class CodingAgentSettings:
 
 
 settings = CodingAgentSettings()
-
-
-
-
-
-
-
-
-# memory_db_uri: str | None = _MEMORY_DB_URI
-#     memory_enabled: bool = _env_bool("CODING_AGENT_MEMORY_ENABLED", bool(_MEMORY_DB_URI))
-#     memory_setup: bool = _env_bool("CODING_AGENT_MEMORY_SETUP", False)
-#     memory_user_id: str = os.getenv("CODING_AGENT_MEMORY_USER_ID", "default")
-#     memory_namespace: str = os.getenv("CODING_AGENT_MEMORY_NAMESPACE", "default")
-#     memory_search_limit: int = _env_int("CODING_AGENT_MEMORY_SEARCH_LIMIT", 5)
-#     memory_semantic_enabled: bool = _env_bool(
-#         "CODING_AGENT_MEMORY_SEMANTIC",
-#         bool(os.getenv("JINA_API_KEY")),
-#     )
-#     memory_embedding_model: str = os.getenv(
-#         "EMBEDDING_MODEL",
-#         "BAAI/bge-small-en-v1.5",
-#     )
-#     memory_embedding_dims: int = _env_int("CODING_AGENT_MEMORY_EMBEDDING_DIMS", 768)
-#     memory_index_fields: tuple[str, ...] = _env_csv(
-#         "CODING_AGENT_MEMORY_INDEX_FIELDS",
-#         ("text", "request", "summary"),
-#     )

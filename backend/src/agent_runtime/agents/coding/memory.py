@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -149,6 +151,39 @@ def memory_namespace(
     )
 
 
+def _windows_extended_path(value: str) -> str:
+    """Keep deep Hugging Face snapshot/tree paths usable on Windows."""
+
+    if os.name != "nt" or value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def _prepare_embedding_cache(value: Path) -> str:
+    requested = Path(os.path.abspath(Path(value).expanduser()))
+    cache_dir = Path(_windows_extended_path(str(requested)))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Store Python redirects AppData. Canonicalize an existing directory before
+    # passing it to Hugging Face, ONNX Runtime, or other native dependencies.
+    cache_dir = Path(_windows_extended_path(str(cache_dir.resolve())))
+
+    # Exercise the create/rename operation used by Hugging Face metadata caching.
+    # Close the temporary file before replacing it (required on Windows).
+    fd, temporary_name = tempfile.mkstemp(prefix=".nodiff-", suffix=".tmp", dir=cache_dir)
+    temporary = Path(temporary_name)
+    destination = temporary.with_suffix(".ready")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("NoDiff cache write check")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+    return str(cache_dir)
+
+
 def _memory_index_config(
     cfg: CodingAgentSettings,
 ) -> dict[str, Any] | None:
@@ -161,14 +196,27 @@ def _memory_index_config(
             "Run: uv add fastembed"
         )
 
-    cache_dir = Path(cfg.memory_embedding_cache_dir).expanduser().resolve()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    embeddings = FastEmbedEmbeddings(
-        model_name=cfg.memory_embedding_model,
-        cache_dir=str(cache_dir),
-        doc_embed_type="passage",
-    )
+    cache_dir = str(cfg.memory_embedding_cache_dir)
+    try:
+        cache_dir = _prepare_embedding_cache(Path(cache_dir))
+        logger.info(
+            "Initializing local embeddings: model=%s cache=%s",
+            cfg.memory_embedding_model, cache_dir,
+        )
+        embeddings = FastEmbedEmbeddings(
+            model_name=cfg.memory_embedding_model,
+            cache_dir=cache_dir,
+            doc_embed_type="passage",
+        )
+    except Exception as exc:
+        # Preserve the traceback and do not silently turn off semantic memory.
+        raise RuntimeError(
+            f"Could not initialize local embeddings {cfg.memory_embedding_model!r}. "
+            f"Cache directory: {cache_dir}. Check that this directory is writable "
+            "and the model download completed. Microsoft Store Python redirects "
+            "AppData; use a regular Python/uv-managed interpreter if its private "
+            "package directory still causes path errors."
+        ) from exc
 
     return {
         "embed": embeddings,
@@ -961,6 +1009,13 @@ def initialize_coding_agent_memory(
     if not cfg.memory_enabled:
         return False
 
+    logger.info(
+        "Initializing coding memory: checkpoints=%s store=%s semantic=%s cache=%s",
+        cfg.memory_checkpoint_db_path,
+        cfg.memory_store_db_path,
+        cfg.memory_semantic_enabled,
+        cfg.memory_embedding_cache_dir,
+    )
     with coding_agent_persistence(cfg, setup=True):
         pass
     return True
