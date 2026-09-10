@@ -154,7 +154,7 @@ export const SourceControlPage = ({
   }, [localRepoRoot]);
 
   const localRepoName = useMemo(
-    () => localRepoRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? "repository",
+    () => localRepoRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? "Select folder",
     [localRepoRoot],
   );
   const selectedSummary = useMemo(
@@ -283,7 +283,7 @@ export const SourceControlPage = ({
                     value={localPath}
                     onChange={(event) => setLocalPath(event.target.value)}
                     className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3 py-2 font-mono text-[11px] text-ink outline-none focus:border-accent/70"
-                    placeholder="/path/to/repository"
+                    placeholder="C:\\Users\\you\\source\\repository"
                   />
                   <button
                     type="button"

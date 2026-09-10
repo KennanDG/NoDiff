@@ -589,12 +589,7 @@ def initialize_runtime_data_layout(config: Settings) -> None:
         Path("runtime-agent-config-coding-runtime.json"),
         coding_config_path,
     )
-    _copy_legacy_file_if_missing(
-        legacy_roots,
-        Path("local-repository-session.json"),
-        config.local_repository_session_path,
-    )
-
+    
     memory_directory = runtime_root / "memory"
     _copy_legacy_file_if_missing(
         legacy_roots,
