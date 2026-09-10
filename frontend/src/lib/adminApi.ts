@@ -32,6 +32,7 @@ export type ChatProvider =
 export type ModelCapability = "chat" | "vision" | "stt" | "tts";
 
 export type AgentConfiguration = {
+  runtime_data_directory: string;
   coding_provider: ChatProvider;
   coding_model: string;
   reasoning_provider: ChatProvider;
@@ -75,6 +76,7 @@ export type AgentConfiguration = {
 
 export type UpdateAgentConfiguration = Omit<
   AgentConfiguration,
+  | "runtime_data_directory"
   | "secrets_configured"
   | "secrets_persistence"
   | "github_token_configured"

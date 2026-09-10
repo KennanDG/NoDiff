@@ -475,6 +475,20 @@ export const AgentSettingsModal = ({
           ) : configuration ? (
             <div className="space-y-5">
               <section className="rounded-lg border border-line bg-panel p-4">
+                <h3 className="text-xs font-semibold text-ink">Runtime data directory</h3>
+                <code
+                  className="mt-2 block break-all rounded-md border border-line bg-surface/60 px-3 py-2 text-[10px] text-muted"
+                  title={configuration.runtime_data_directory}
+                >
+                  {configuration.runtime_data_directory}
+                </code>
+                <p className="mt-2 text-[10px] leading-4 text-faint">
+                  Model settings, repository session, GitHub workspaces, and local memory all use
+                  this per-user directory. Restart the app after changing an environment override.
+                </p>
+              </section>
+
+              <section className="rounded-lg border border-line bg-panel p-4">
                 <h3 className="text-xs font-semibold text-ink">Coding agent models</h3>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <ProviderSelect
