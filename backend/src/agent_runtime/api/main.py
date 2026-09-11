@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -96,17 +98,53 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def _monitor_parent_stdin(server: uvicorn.Server) -> None:
+    """Request a graceful Uvicorn shutdown when the Electron parent asks for it.
+
+    Electron launches the packaged FastAPI runtime with stdin connected to a pipe.
+    Sending ``shutdown\n`` lets Uvicorn complete its normal lifespan shutdown before
+    the desktop process exits. EOF is treated the same way, which also prevents an
+    orphaned sidecar if the parent process disappears unexpectedly.
+    """
+
+    stream = sys.stdin
+    if stream is None:
+        return
+
+    try:
+        for line in stream:
+            if line.strip().lower() == "shutdown":
+                logger.info("Desktop parent requested FastAPI shutdown")
+                server.should_exit = True
+                return
+
+        # Parent closed the pipe without sending the sentinel.
+        server.should_exit = True
+    except Exception:
+        logger.exception("Failed while monitoring the desktop shutdown pipe")
+
+
 def main() -> None:
     host = os.getenv("AGENT_RUNTIME_HOST", "127.0.0.1")
     port = int(os.getenv("AGENT_RUNTIME_PORT", "8765"))
     log_level = os.getenv("AGENT_RUNTIME_LOG_LEVEL", "info")
 
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=host,
         port=port,
         log_level=log_level,
     )
+    server = uvicorn.Server(config)
+
+    shutdown_monitor = threading.Thread(
+        target=_monitor_parent_stdin,
+        args=(server,),
+        name="desktop-shutdown-monitor",
+        daemon=True,
+    )
+    shutdown_monitor.start()
+    server.run()
 
 
 if __name__ == "__main__":
