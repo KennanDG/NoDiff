@@ -1,16 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="bridge" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#58D5FF"/>
-      <stop offset="1" stop-color="#A98CFF"/>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151922"/>
+      <stop offset="45%" stop-color="#0D1016"/>
+      <stop offset="100%" stop-color="#090B10"/>
     </linearGradient>
+    
+    <linearGradient id="leftPillarGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FCA5A5"/>
+      <stop offset="40%" stop-color="#F87171"/>
+      <stop offset="100%" stop-color="#EF4444"/>
+    </linearGradient>
+
+    <linearGradient id="flowRedGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F87171"/>
+      <stop offset="35%" stop-color="#EF4444"/>
+      <stop offset="65%" stop-color="#DC2626"/>
+      <stop offset="100%" stop-color="#881337"/>
+    </linearGradient>
+
+    <filter id="redGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#DC2626" flood-opacity="0.45"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#F87171" flood-opacity="0.30"/>
+    </filter>
+
+    <filter id="tileShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.65"/>
+    </filter>
   </defs>
-  <rect width="1024" height="1024" rx="220" fill="#090B10"/>
-  <rect x="54" y="54" width="916" height="916" rx="210" fill="#121722"/>
-  <rect x="78" y="78" width="868" height="868" rx="188" fill="none" stroke="#FFFFFF" stroke-opacity=".07" stroke-width="3"/>
-  <rect x="278" y="260" width="112" height="504" rx="48" fill="#58D5FF"/>
-  <rect x="634" y="260" width="112" height="504" rx="48" fill="#A98CFF"/>
-  <path d="M350 274 L442 260 L700 748 L604 764 Z" fill="url(#bridge)"/>
-  <rect x="447" y="824" width="130" height="7" rx="3.5" fill="#F4F7FB" fill-opacity=".7"/>
-  <rect x="447" y="846" width="130" height="7" rx="3.5" fill="#F4F7FB" fill-opacity=".7"/>
+
+  <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#bgGrad)" stroke="#222732" stroke-width="3" filter="url(#tileShadow)"/>
+
+  <rect x="34" y="34" width="444" height="444" rx="102" fill="none" stroke="rgba(255, 255, 255, 0.06)" stroke-width="1.5"/>
+
+  <g filter="url(#redGlow)">
+    <path d="M148 356 V156 C148 147.163 155.163 140 164 140 H180 C188.837 140 196 147.163 196 156 V356 C196 364.837 188.837 372 180 372 H164 C155.163 372 148 364.837 148 356 Z" fill="url(#leftPillarGrad)" />
+
+    <path d="M176 148 L328 352 C333.6 359.5 342.5 364 352 364 H356 C364.837 364 372 356.837 372 348 V156 C372 147.163 364.837 140 356 140 H340 C331.163 140 324 147.163 324 156 V292 L200 144 C193.5 136.2 183.6 132 173 132 C158 132 148 143 148 156" fill="url(#flowRedGrad)" />
+
+    <rect x="228" y="412" width="64" height="6" rx="3" fill="#C5CAD5" opacity="0.9" />
+    <rect x="228" y="424" width="64" height="6" rx="3" fill="#C5CAD5" opacity="0.9" />
+  </g>
 </svg>

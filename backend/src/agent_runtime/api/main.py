@@ -8,6 +8,13 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import uvicorn
+from agent_runtime.config.langsmith_bootstrap import disable_langsmith_tracing
+
+# IMPORTANT: disable tracing before importing any router/module that may construct
+# LangChain/LangGraph runtimes. This overrides values inherited from Electron,
+# the shell, or .env for this diagnostic build.
+disable_langsmith_tracing()
+
 from agent_runtime.agents.coding.memory import initialize_coding_agent_memory
 from agent_runtime.api.auth import ApiKeyMiddleware
 from agent_runtime.api.routers.admin import router as admin_router
