@@ -6,19 +6,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Runtime state, generated build output, dependency caches, and VCS metadata do
+# not belong in a coding sandbox. Copying them is both expensive and fragile on
+# Windows (especially model caches with long paths / transient files).
 SANDBOX_IGNORE_DIRS = {
+    ".agent-runtime",
+    ".cache",
     ".git",
     ".mypy_cache",
+    ".next",
+    ".parcel-cache",
+    ".pnpm-store",
     ".pytest_cache",
     ".ruff_cache",
     ".tox",
+    ".turbo",
     ".venv",
+    ".yarn",
     "__pycache__",
     "build",
+    "coverage",
     "dist",
+    "dist-electron",
     "node_modules",
+    "out",
+    "release",
+    "target",
     "venv",
-    ".agent-runtime",
 }
 
 
@@ -32,8 +46,11 @@ class CodingSandbox:
 
 
 def _ignore(_dir: str, names: list[str]) -> set[str]:
-    return {name for name in names if name in SANDBOX_IGNORE_DIRS or name.endswith(".egg-info")}
-
+    return {
+        name
+        for name in names
+        if name in SANDBOX_IGNORE_DIRS or name.endswith(".egg-info")
+    }
 
 
 def _link_existing_dependency_dirs(
@@ -86,11 +103,16 @@ def create_coding_sandbox(
     sandbox_root = Path(tempfile.mkdtemp(prefix=f"coding-agent-{run_id}-"))
     sandbox_workspace_root = sandbox_root / "workspace"
 
-    shutil.copytree(
-        original_workspace_root,
-        sandbox_workspace_root,
-        ignore=_ignore,
-    )
+    try:
+        shutil.copytree(
+            original_workspace_root,
+            sandbox_workspace_root,
+            ignore=_ignore,
+        )
+    except Exception:
+        # Do not strand partially copied sandboxes when Windows rejects a path.
+        shutil.rmtree(sandbox_root, ignore_errors=True)
+        raise
 
     _link_existing_dependency_dirs(
         original_workspace_root=original_workspace_root,

@@ -110,7 +110,7 @@ const apiFetch = async (
   return fetch(url, init);
 };
 
-const GITHUB_IMPORT_TIMEOUT_MS = 135_000;
+const GITHUB_IMPORT_TIMEOUT_MS = 20_000;
 
 const fetchWithTimeout = async (
   url: URL,

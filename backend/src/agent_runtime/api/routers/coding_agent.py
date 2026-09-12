@@ -840,9 +840,18 @@ def _stream_coding_agent_worker(
             else original_repo_root_path
         )
 
-        # Acknowledge the request before any potentially expensive filesystem copy
-        # or model/memory setup. Previously run.started was emitted only after the
-        # sandbox was ready, which made a slow Windows copy look like a dead socket.
+        # Initialize the isolated worktree after the acknowledgement.
+        sandbox = create_coding_sandbox(
+            repo_root=original_repo_root_path,
+            workspace_root=original_workspace_root_path,
+            run_id=run_id,
+        )
+
+        repo_root = str(sandbox.repo_root)
+        workspace_root = str(sandbox.workspace_root)
+        logger.info("Coding run %s sandbox ready at %s", run_id, sandbox.sandbox_root)
+
+        
         _send_threadsafe(
             loop=loop,
             queue=queue,
@@ -885,16 +894,6 @@ def _stream_coding_agent_worker(
             thread_id,
         )
 
-        # Initialize the isolated worktree after the acknowledgement.
-        sandbox = create_coding_sandbox(
-            repo_root=original_repo_root_path,
-            workspace_root=original_workspace_root_path,
-            run_id=run_id,
-        )
-
-        repo_root = str(sandbox.repo_root)
-        workspace_root = str(sandbox.workspace_root)
-        logger.info("Coding run %s sandbox ready at %s", run_id, sandbox.sandbox_root)
 
         try:
             attached_files, attachment_errors = _normalize_attached_files(
