@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -27,8 +27,8 @@ type SourceControlPageProps = {
   selectedGitHubRepository: string | null;
   githubLoading: boolean;
   githubError: string | null;
-  onSelectGitHubRepository: (fullName: string) => void;
-  onUseLocalRepository: () => void;
+  onSelectGitHubRepository: (fullName: string) => Promise<boolean>;
+  onUseLocalRepository: () => Promise<boolean>;
   onSelectLocalRepository: (repoRoot: string) => Promise<boolean>;
   onBrowseLocalRepository: () => Promise<string | null>;
   onRefreshGitHubRepositories: () => void;
@@ -132,6 +132,11 @@ export const SourceControlPage = ({
   onCreateGitHubPullRequest,
 }: SourceControlPageProps) => {
   const [localPath, setLocalPath] = useState(localRepoRoot);
+  const committedRepositorySource = selectedGitHubRepository
+    ? `github:${selectedGitHubRepository}`
+    : "local";
+  const [repositorySource, setRepositorySource] = useState(committedRepositorySource);
+  const sourceChangeGenerationRef = useRef(0);
   const [newBranch, setNewBranch] = useState("agent/");
   const [commitMessage, setCommitMessage] = useState("");
   const [prTitle, setPrTitle] = useState("");
@@ -153,6 +158,14 @@ export const SourceControlPage = ({
     setLocalPath(localRepoRoot);
   }, [localRepoRoot]);
 
+  // Keep the selector responsive during a slow clone/import. The parent commits
+  // selectedGitHubRepository only after the backend import succeeds; until then
+  // this local value reflects the user's pending choice instead of snapping back
+  // to "Local".
+  useEffect(() => {
+    setRepositorySource(committedRepositorySource);
+  }, [committedRepositorySource]);
+
   const localRepoName = useMemo(
     () => localRepoRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? "Select folder",
     [localRepoRoot],
@@ -163,6 +176,12 @@ export const SourceControlPage = ({
   );
 
   const busy = githubActionLoading !== null;
+  const repositoryImporting = githubActionLoading === "repository";
+  const localRepositorySaving = githubActionLoading === "local-repository";
+  // A GitHub import is intentionally recoverable: while it is running the user
+  // can still choose Local/Browse. Other Git mutations keep repository controls
+  // locked to avoid racing a branch/commit/push operation.
+  const repositoryControlsLocked = busy && !repositoryImporting;
   const canPush = Boolean(repositoryPermissions?.push && selectedGitHubRepository);
   const canCommit = canPush && committableFileCount > 0 && commitMessage.trim().length > 0;
   const canOpenPr = Boolean(
@@ -175,13 +194,41 @@ export const SourceControlPage = ({
       !githubRepositoryStatus.dirty,
   );
 
+  const handleRepositorySourceChange = async (value: string) => {
+    const sourceChangeGeneration = ++sourceChangeGenerationRef.current;
+    setRepositorySource(value);
+
+    const selected = value === "local"
+      ? await onUseLocalRepository()
+      : value.startsWith("github:")
+        ? await onSelectGitHubRepository(value.slice("github:".length))
+        : false;
+
+    // Ignore the completion of an older selection after the user has already
+    // picked another source. This prevents a slow import from snapping the
+    // selector back over a newer Local/GitHub choice.
+    if (sourceChangeGeneration !== sourceChangeGenerationRef.current) return;
+
+    if (!selected) {
+      setRepositorySource(committedRepositorySource);
+    }
+  };
+
   const handleSelectLocalRepository = async () => {
-    await onSelectLocalRepository(localPath);
+    const sourceChangeGeneration = ++sourceChangeGenerationRef.current;
+    const selected = await onSelectLocalRepository(localPath);
+    if (sourceChangeGeneration !== sourceChangeGenerationRef.current) return;
+    if (selected) setRepositorySource("local");
   };
 
   const handleBrowseLocalRepository = async () => {
+    const sourceChangeGeneration = ++sourceChangeGenerationRef.current;
     const selectedPath = await onBrowseLocalRepository();
-    if (selectedPath) setLocalPath(selectedPath);
+    if (sourceChangeGeneration !== sourceChangeGenerationRef.current) return;
+    if (selectedPath) {
+      setLocalPath(selectedPath);
+      setRepositorySource("local");
+    }
   };
 
   const handleCommit = async () => {
@@ -252,25 +299,28 @@ export const SourceControlPage = ({
               </div>
 
               <FieldLabel>Repository source</FieldLabel>
-              <select
-                value={selectedGitHubRepository ? `github:${selectedGitHubRepository}` : "local"}
-                disabled={githubLoading || busy}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  if (value === "local") onUseLocalRepository();
-                  else if (value.startsWith("github:")) {
-                    onSelectGitHubRepository(value.slice("github:".length));
-                  }
-                }}
-                className="w-full rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none hover:border-line-strong focus:border-accent/70"
-              >
+              <div className="flex items-center gap-2">
+                <select
+                  value={repositorySource}
+                  disabled={githubLoading || repositoryControlsLocked}
+                  onChange={(event) => void handleRepositorySourceChange(event.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none hover:border-line-strong focus:border-accent/70"
+                >
                 <option value="local">Local · {localRepoName}</option>
-                {githubRepositories.map((repository) => (
-                  <option key={repository.id} value={`github:${repository.full_name}`}>
-                    GitHub · {repository.full_name}{repository.private ? " (private)" : ""}
-                  </option>
-                ))}
-              </select>
+                  {githubRepositories.map((repository) => (
+                    <option key={repository.id} value={`github:${repository.full_name}`}>
+                      GitHub · {repository.full_name}{repository.private ? " (private)" : ""}
+                    </option>
+                  ))}
+                </select>
+                {repositoryImporting ? (
+                  <LoaderCircle
+                    size={14}
+                    className="shrink-0 animate-spin text-accent-light"
+                    aria-label="Importing GitHub repository"
+                  />
+                ) : null}
+              </div>
 
               <p className="mt-2 truncate font-mono text-[10px] text-faint" title={repoRoot}>
                 {repoRoot}
@@ -288,7 +338,7 @@ export const SourceControlPage = ({
                   <button
                     type="button"
                     className="secondary-button h-8"
-                    disabled={busy || !localDirectoryPickerAvailable}
+                    disabled={repositoryControlsLocked || !localDirectoryPickerAvailable}
                     onClick={() => void handleBrowseLocalRepository()}
                     title={
                       localDirectoryPickerAvailable
@@ -302,10 +352,10 @@ export const SourceControlPage = ({
                   <button
                     type="button"
                     className="primary-button h-8"
-                    disabled={busy || !localPath.trim()}
+                    disabled={repositoryControlsLocked || !localPath.trim()}
                     onClick={() => void handleSelectLocalRepository()}
                   >
-                    {githubActionLoading === "local-repository" ? (
+                    {localRepositorySaving ? (
                       <LoaderCircle size={12} className="animate-spin" />
                     ) : (
                       <FolderOpen size={12} />
