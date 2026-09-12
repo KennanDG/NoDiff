@@ -7,7 +7,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import logoUrl from "../../assets/new_icon.svg";
+import logoUrl from "../../assets/icon.svg";
 
 export type ActivityView = "explorer" | "source-control" | "skills";
 export type ActivityAction = ActivityView | "agent" | "search";
