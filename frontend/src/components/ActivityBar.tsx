@@ -7,6 +7,8 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import logoUrl from "../../assets/new_icon.svg";
+
 export type ActivityView = "explorer" | "source-control" | "skills";
 export type ActivityAction = ActivityView | "agent" | "search";
 
@@ -34,8 +36,8 @@ export const ActivityBar = ({
       className="flex w-13 shrink-0 flex-col items-center border-r border-line bg-panel py-2"
       aria-label="Primary"
     >
-      <div className="mb-3 grid size-8 place-items-center rounded-lg bg-accent text-ink shadow-glow">
-        <span className="font-mono text-sm font-bold">A</span>
+      <div className="mb-3 grid size-8 place-items-center rounded-lg bg-accent shadow-glow">
+        <img src={logoUrl} alt="Application logo" className="size-8 rounded-lg object-cover" />
       </div>
 
       <div className="flex flex-1 flex-col gap-1">

@@ -1046,6 +1046,14 @@ def _stream_coding_agent_worker(
                 ),
             )
 
+            # LangSmith tracing is intentionally disabled at process startup while
+            # diagnosing the Electron/sidecar stall. Run the graph directly so no
+            # LangSmith client, callback, trace scope, or trace flush participates in
+            # the coding-agent request lifecycle.
+            logger.info(
+                "Coding run %s entering LangGraph stream with LangSmith tracing disabled",
+                run_id,
+            )
             for update in graph.stream(
                 initial_state,
                 config=config,

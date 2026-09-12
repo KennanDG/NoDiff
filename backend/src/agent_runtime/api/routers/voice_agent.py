@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from functools import lru_cache
 from typing import Any
@@ -196,7 +197,11 @@ async def voice_turn(
         if skill_message:
             history = [*history, skill_message][-12:]
 
-        result = get_voice_service().run_turn(
+        # VoiceAgentService is synchronous (STT -> LangGraph -> TTS), so keep it
+        # off FastAPI's event loop. LangSmith tracing is disabled process-wide and
+        # there is deliberately no trace scope around this worker.
+        result = await asyncio.to_thread(
+            get_voice_service().run_turn,
             audio_bytes=content,
             filename=audio.filename or "voice-input.webm",
             content_type=audio.content_type,
