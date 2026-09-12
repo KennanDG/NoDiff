@@ -6,6 +6,60 @@ type ApiClientConfig = {
 const authHeaders = (apiKey?: string): HeadersInit =>
   apiKey ? { "x-api-key": apiKey } : {};
 
+
+const apiFetch = async (
+  input: string | URL,
+  init: RequestInit = {},
+  timeoutMs = 300_000,
+): Promise<Response> => {
+  const desktopRequest = window.desktop?.apiRequest;
+
+  // Browser-only development fallback. In the Electron app, always proxy API
+  // calls through the main process so Chromium never performs CORS/preflight
+  // handling against the managed FastAPI sidecar.
+  if (!desktopRequest) {
+    return fetch(input, init);
+  }
+
+  if (init.signal?.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+
+  const url = input instanceof URL ? input.toString() : input;
+  const headers: Record<string, string> = {};
+  new Headers(init.headers).forEach((value, key) => {
+    headers[key] = value;
+  });
+
+  // The Electron main process owns sidecar authentication and overwrites this
+  // header with the managed runtime key.
+  delete headers["x-api-key"];
+
+  let body: string | null = null;
+  if (init.body != null) {
+    if (typeof init.body !== "string") {
+      throw new TypeError(
+        "Desktop admin API requests currently require a string request body.",
+      );
+    }
+    body = init.body;
+  }
+
+  const result = await desktopRequest({
+    url,
+    method: init.method ?? "GET",
+    headers,
+    body,
+    timeoutMs,
+  });
+
+  return new Response(result.body, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   if (response.ok) return (await response.json()) as T;
 
@@ -100,7 +154,7 @@ export const fetchAgentConfiguration = async ({
   apiBaseUrl,
   apiKey,
 }: ApiClientConfig): Promise<AgentConfiguration> => {
-  const response = await fetch(`${apiBaseUrl}/admin/agent-configuration`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/agent-configuration`, {
     headers: authHeaders(apiKey),
   });
   return readJson<AgentConfiguration>(response);
@@ -113,7 +167,7 @@ export const updateAgentConfiguration = async ({
 }: ApiClientConfig & {
   configuration: UpdateAgentConfiguration;
 }): Promise<AgentConfiguration> => {
-  const response = await fetch(`${apiBaseUrl}/admin/agent-configuration`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/agent-configuration`, {
     method: "PUT",
     headers: {
       "content-type": "application/json",
@@ -136,7 +190,7 @@ export const fetchAvailableModels = async ({
   const url = new URL("/admin/models", apiBaseUrl);
   url.searchParams.set("provider", provider);
   url.searchParams.set("capability", capability);
-  const response = await fetch(url, { headers: authHeaders(apiKey) });
+  const response = await apiFetch(url, { headers: authHeaders(apiKey) });
   return readJson<ModelCatalogResponse>(response);
 };
 
@@ -158,7 +212,7 @@ export const fetchSkills = async ({
 }: ApiClientConfig & { agent: AgentKind }): Promise<SkillSummary[]> => {
   const url = new URL("/admin/skills", apiBaseUrl);
   url.searchParams.set("agent", agent);
-  const response = await fetch(url, { headers: authHeaders(apiKey) });
+  const response = await apiFetch(url, { headers: authHeaders(apiKey) });
   return readJson<SkillSummary[]>(response);
 };
 
@@ -175,7 +229,7 @@ export const saveSkill = async ({
   content: string;
   overwrite: boolean;
 }): Promise<SkillSummary> => {
-  const response = await fetch(`${apiBaseUrl}/admin/skills`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/skills`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -195,7 +249,7 @@ export const deleteSkill = async ({
   agent: AgentKind;
   name: string;
 }): Promise<{ deleted: boolean }> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${apiBaseUrl}/admin/skills/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`,
     {
       method: "DELETE",
@@ -226,7 +280,7 @@ export const fetchTools = async ({
 }: ApiClientConfig & { agent: AgentKind }): Promise<ToolSummary[]> => {
   const url = new URL("/admin/tools", apiBaseUrl);
   url.searchParams.set("agent", agent);
-  const response = await fetch(url, { headers: authHeaders(apiKey) });
+  const response = await apiFetch(url, { headers: authHeaders(apiKey) });
   return readJson<ToolSummary[]>(response);
 };
 
@@ -239,7 +293,7 @@ export const fetchToolReview = async ({
   agent: AgentKind;
   name: string;
 }): Promise<ToolReviewResponse> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${apiBaseUrl}/admin/tools/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`,
     { headers: authHeaders(apiKey) },
   );
@@ -258,7 +312,7 @@ export const updateToolFile = async ({
   path: string;
   content: string;
 }): Promise<ToolReviewResponse> => {
-  const response = await fetch(`${apiBaseUrl}/admin/tools/content`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/tools/content`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -278,7 +332,7 @@ export const approveTool = async ({
   agent: AgentKind;
   name: string;
 }): Promise<ToolSummary> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${apiBaseUrl}/admin/tools/${encodeURIComponent(agent)}/${encodeURIComponent(name)}/approve`,
     {
       method: "POST",
@@ -297,7 +351,7 @@ export const rejectTool = async ({
   agent: AgentKind;
   name: string;
 }): Promise<{ rejected: boolean }> => {
-  const response = await fetch(
+  const response = await apiFetch(
     `${apiBaseUrl}/admin/tools/${encodeURIComponent(agent)}/${encodeURIComponent(name)}/reject`,
     {
       method: "DELETE",
@@ -320,7 +374,7 @@ export const quarantineTool = async ({
   purpose: string;
   source: string;
 }): Promise<ToolSummary> => {
-  const response = await fetch(`${apiBaseUrl}/admin/tools/quarantine`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/tools/quarantine`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -354,7 +408,7 @@ export const draftSkill = async ({
   sourceMarkdown?: string;
   suggestedName?: string;
 }): Promise<SkillDraftResponse> => {
-  const response = await fetch(`${apiBaseUrl}/admin/skills/draft`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/skills/draft`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -366,7 +420,7 @@ export const draftSkill = async ({
       source_markdown: sourceMarkdown ?? null,
       suggested_name: suggestedName ?? null,
     }),
-  });
+  }, 300_000);
   return readJson<SkillDraftResponse>(response);
 };
 export type ToolGenerateRequest = {
@@ -382,14 +436,14 @@ export const generateTool = async ({
   toolType,
   prompt,
 }: ApiClientConfig & ToolGenerateRequest): Promise<ToolGenerationResponse> => {
-  const response = await fetch(`${apiBaseUrl}/admin/generate-tools`, {
+  const response = await apiFetch(`${apiBaseUrl}/admin/generate-tools`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...authHeaders(apiKey),
     },
     body: JSON.stringify({ tool_type: toolType, prompt }),
-  });
+  }, 300_000);
   return readJson<ToolGenerationResponse>(response);
 };
 

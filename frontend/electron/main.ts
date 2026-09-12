@@ -100,6 +100,10 @@ function configureRuntimeDataPaths() {
   process.env.CODING_AGENT_MEMORY_ENABLED ??= "true";
   process.env.CODING_AGENT_MEMORY_SETUP ??= "true";
   process.env.AGENT_RUNTIME_INITIALIZE_MEMORY_ON_STARTUP ??= "true";
+
+  // NoDiff is a long-lived desktop process. Keep LangSmith trace uploads in
+  // the background so request completion never waits on trace transport.
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = "true";
 }
 
 configureRuntimeDataPaths();

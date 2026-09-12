@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import logging
+import time
 import re
 import json
 import os
@@ -9,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.output_parsers import PydanticOutputParser
+from langsmith import tracing_context
 from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, Query
@@ -26,6 +30,7 @@ from agent_runtime.agents.voice.tool_registry import (
     validate_voice_custom_tool_source,
 )
 from agent_runtime.agents.coding.model_factory import build_chat_model
+from agent_runtime.agents.coding.coding_agent_settings import settings as coding_settings
 from agent_runtime.agents.coding.utils.text import message_content_to_text
 from agent_runtime.config.model_catalog import ModelCapability, discover_models
 from agent_runtime.config.runtime_configuration import runtime_agent_configuration
@@ -73,6 +78,8 @@ TOOL_DIRS: dict[AgentKind, Path] = {
 
 
 
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -394,7 +401,7 @@ def _render_skill_markdown(
     )
 
 
-def _generate_skill_draft(request: SkillDraftRequest) -> SkillDraftResponse:
+async def _generate_skill_draft(request: SkillDraftRequest) -> SkillDraftResponse:
     tools = _executable_tool_catalog(request.agent)
     available_names = {tool.name for tool in tools}
     tool_catalog = "\n".join(
@@ -444,14 +451,50 @@ Create or normalize a custom skill for the {request.agent} agent.
             max_tokens=2_400,
             temperature=0.1,
         )
-        response = model.invoke(
-            [("system", system_prompt), ("human", user_prompt)],
-            config={
-                "run_name": "admin_skill_draft",
-                "tags": ["admin", "skill-draft", request.agent],
-            },
+        started_at = time.perf_counter()
+        logger.info(
+            "Starting admin skill draft model call provider=%s model=%s agent=%s",
+            config_settings.coding_provider,
+            config_settings.coding_model,
+            request.agent,
+        )
+
+        # Use the model's native async transport rather than running sync invoke()
+        # inside FastAPI's worker-thread path. The outer asyncio timeout also
+        # protects us from a callback/tracing finalizer that fails to return even
+        # after the provider has produced a response.
+        # Administrative generation does not need LangSmith tracing. In this
+        # desktop/FastAPI process the auto LangChain tracer can remain inside its
+        # shielded on_llm_end callback even after the provider has returned,
+        # leaving this HTTP request open until interpreter shutdown.
+        #
+        # tracing_context(enabled=False) disables only this invocation. Coding
+        # agent/LangGraph runs remain traced normally.
+        with tracing_context(enabled=False):
+            response = await asyncio.wait_for(
+                model.ainvoke(
+                    [("system", system_prompt), ("human", user_prompt)],
+                ),
+                timeout=float(coding_settings.model_timeout_seconds + 15),
+            )
+
+        logger.info(
+            "Admin skill draft model call completed in %.3fs; parsing response",
+            time.perf_counter() - started_at,
         )
         decision = parser.parse(message_content_to_text(response.content))
+        logger.info(
+            "Admin skill draft parsed successfully in %.3fs",
+            time.perf_counter() - started_at,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Skill generation timed out while waiting for the model/callback "
+                "pipeline to finish."
+            ),
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -513,7 +556,7 @@ class _GeneratedToolDraft(BaseModel):
     source: str
 
 
-def _generate_tool_draft(request: _ToolGenerateRequest) -> tuple[str, str, str]:
+async def _generate_tool_draft(request: _ToolGenerateRequest) -> tuple[str, str, str]:
     tools = _executable_tool_catalog(request.tool_type)
     tool_catalog = '\n'.join(
         f'- {tool.name}: {tool.purpose or tool.module}'
@@ -554,14 +597,32 @@ Create a custom tool for the {request.tool_type} agent.
             max_tokens=3_200,
             temperature=0.1,
         )
-        response = model.invoke(
-            [('system', system_prompt), ('human', user_prompt)],
-            config={
-                'run_name': 'admin_tool_draft',
-                'tags': ['admin', 'tool-draft', request.tool_type],
-            },
+        started_at = time.perf_counter()
+        logger.info(
+            "Starting admin tool draft model call provider=%s model=%s agent=%s",
+            config_settings.coding_provider,
+            config_settings.coding_model,
+            request.tool_type,
+        )
+        # Use the same trace isolation as skill generation. Tool generation is
+        # an administrative one-shot model request, not a graph execution.
+        with tracing_context(enabled=False):
+            response = await asyncio.wait_for(
+                model.ainvoke(
+                    [('system', system_prompt), ('human', user_prompt)],
+                ),
+                timeout=float(coding_settings.model_timeout_seconds + 15),
+            )
+        logger.info(
+            "Admin tool draft model call completed in %.3fs; parsing response",
+            time.perf_counter() - started_at,
         )
         draft = parser.parse(message_content_to_text(response.content))
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail='Tool generation timed out while waiting for the model/callback pipeline to finish.',
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -784,10 +845,17 @@ def list_skills(
 
 
 @router.post("/skills/draft", response_model=SkillDraftResponse)
-def draft_skill(request: SkillDraftRequest) -> SkillDraftResponse:
+async def draft_skill(request: SkillDraftRequest) -> SkillDraftResponse:
     """Generate a new skill or translate imported Markdown into canonical format."""
 
-    return _generate_skill_draft(request)
+    logger.info(
+        "Received admin skill draft request agent=%s prompt_chars=%d",
+        request.agent,
+        len(request.prompt),
+    )
+    result = await _generate_skill_draft(request)
+    logger.info("Returning admin skill draft response name=%s", result.name)
+    return result
 
 
 @router.post("/skills", response_model=SkillSummary)
@@ -1005,10 +1073,10 @@ def reject_tool(agent: AgentKind, name: str) -> dict[str, bool]:
 
 
 @router.post("/generate-tools", response_model=ToolReviewResponse)
-def generate_tools(request: _ToolGenerateRequest) -> ToolReviewResponse:
+async def generate_tools(request: _ToolGenerateRequest) -> ToolReviewResponse:
     '''Generate a custom tool draft and quarantine it for review.'''
 
-    name, purpose, source = _generate_tool_draft(request)
+    name, purpose, source = await _generate_tool_draft(request)
 
     path = _custom_tool_path(request.tool_type, name, status='pending_review')
     approved_path = _custom_tool_path(request.tool_type, name, status='approved')
