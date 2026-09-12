@@ -68,6 +68,101 @@ const authHeaders = (apiKey?: string): HeadersInit => {
   return apiKey ? { "x-api-key": apiKey } : {};
 };
 
+const headersToRecord = (headers?: HeadersInit): Record<string, string> => {
+  if (!headers) return {};
+
+  const normalized = new Headers(headers);
+  const result: Record<string, string> = {};
+  normalized.forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+};
+
+const apiFetch = async (
+  url: URL,
+  init: RequestInit = {},
+  timeoutMs?: number,
+): Promise<Response> => {
+  const desktopRequest = window.desktop?.apiRequest;
+
+  if (desktopRequest) {
+    const headers = headersToRecord(init.headers);
+    // Electron main injects the current sidecar key. Do not shuttle it back over
+    // IPC when the desktop bridge is available.
+    delete headers["x-api-key"];
+
+    const result = await desktopRequest({
+      url: url.toString(),
+      method: init.method ?? "GET",
+      headers,
+      body: typeof init.body === "string" ? init.body : null,
+      timeoutMs,
+    });
+
+    return new Response(result.body, {
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+    });
+  }
+
+  return fetch(url, init);
+};
+
+const GITHUB_IMPORT_TIMEOUT_MS = 135_000;
+
+const fetchWithTimeout = async (
+  url: URL,
+  init: RequestInit,
+  {
+    operation,
+    timeoutMs,
+  }: {
+    operation: string;
+    timeoutMs: number;
+  },
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    if (window.desktop?.apiRequest) {
+      return await apiFetch(
+        url,
+        {
+          ...init,
+          credentials: "omit",
+          cache: "no-store",
+        },
+        timeoutMs,
+      );
+    }
+
+    return await apiFetch(url, {
+      ...init,
+      signal: controller.signal,
+      credentials: "omit",
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        `${operation} timed out after ${Math.round(timeoutMs / 1000)} seconds. ` +
+          "If FastAPI only logged an OPTIONS request, the browser rejected the CORS/private-network preflight before sending the POST.",
+      );
+    }
+
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${operation} could not be completed by the renderer. ${detail}. ` +
+        "Check the Electron DevTools Network tab: a 200 OPTIONS without a following POST indicates a rejected preflight, not a successful import.",
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   if (response.ok) return (await response.json()) as T;
 
@@ -100,7 +195,7 @@ export const fetchRepositoryTree = async ({
     max_entries: maxEntries,
   });
 
-  const response = await fetch(url, { headers: authHeaders(apiKey) });
+  const response = await apiFetch(url, { headers: authHeaders(apiKey) });
   return readJson<RepositoryTreeResponse>(response);
 };
 
@@ -115,7 +210,7 @@ export const fetchRepositoryFile = async ({
     path,
   });
 
-  const response = await fetch(url, { headers: authHeaders(apiKey) });
+  const response = await apiFetch(url, { headers: authHeaders(apiKey) });
   return readJson<RepositoryFile>(response);
 };
 
@@ -124,7 +219,7 @@ export const fetchSavedLocalRepositoryRoot = async ({
   apiBaseUrl,
   apiKey,
 }: ApiClientConfig): Promise<SavedLocalRepositoryRoot> => {
-  const response = await fetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
+  const response = await apiFetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
     headers: authHeaders(apiKey),
   });
   return readJson<SavedLocalRepositoryRoot>(response);
@@ -135,7 +230,7 @@ export const saveLocalRepositoryRoot = async ({
   apiKey,
   repoRoot,
 }: RepositoryRequest): Promise<SavedLocalRepositoryRoot> => {
-  const response = await fetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
+  const response = await apiFetch(apiUrl("/admin/local-repository", { apiBaseUrl, apiKey }, {}), {
     method: "PUT",
     headers: {
       "content-type": "application/json",
@@ -150,7 +245,7 @@ export const fetchGitHubStatus = async ({
   apiBaseUrl,
   apiKey,
 }: ApiClientConfig): Promise<GitHubStatus> => {
-  const response = await fetch(apiUrl("/github/status", { apiBaseUrl, apiKey }, {}), {
+  const response = await apiFetch(apiUrl("/github/status", { apiBaseUrl, apiKey }, {}), {
     headers: authHeaders(apiKey),
   });
   return readJson<GitHubStatus>(response);
@@ -160,7 +255,7 @@ export const fetchGitHubRepositories = async ({
   apiBaseUrl,
   apiKey,
 }: ApiClientConfig): Promise<GitHubRepositorySummary[]> => {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl("/github/repositories", { apiBaseUrl, apiKey }, { per_page: 100 }),
     { headers: authHeaders(apiKey) },
   );
@@ -178,18 +273,46 @@ export const importGitHubRepository = async ({
   ref?: string | null;
   refresh?: boolean;
 }): Promise<GitHubRepositoryImportResponse> => {
-  const response = await fetch(apiUrl("/github/repositories/import", { apiBaseUrl, apiKey }, {}), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...authHeaders(apiKey),
-    },
-    body: JSON.stringify({
-      full_name: fullName,
+  const url = apiUrl("/github/repositories/import", { apiBaseUrl, apiKey }, {});
+
+  if (import.meta.env.DEV) {
+    console.debug("[repositoryApi] importing GitHub repository", {
+      url: url.toString(),
+      fullName,
       ref: ref ?? null,
       refresh,
-    }),
-  });
+    });
+  }
+
+  const response = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        ...authHeaders(apiKey),
+      },
+      body: JSON.stringify({
+        full_name: fullName,
+        ref: ref ?? null,
+        refresh,
+      }),
+    },
+    {
+      operation: `Importing ${fullName}`,
+      timeoutMs: GITHUB_IMPORT_TIMEOUT_MS,
+    },
+  );
+
+  if (import.meta.env.DEV) {
+    console.debug("[repositoryApi] GitHub import response", {
+      status: response.status,
+      ok: response.ok,
+      url: response.url,
+      type: response.type,
+    });
+  }
 
   return readJson<GitHubRepositoryImportResponse>(response);
 };
@@ -210,7 +333,7 @@ export const fetchGitHubBranches = async ({
   page?: number;
   perPage?: number;
 }): Promise<GitHubBranchSummary[]> => {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl("/github/repositories/branches", { apiBaseUrl, apiKey }, { full_name: fullName, page, per_page: perPage }),
     { headers: authHeaders(apiKey) },
   );
@@ -290,7 +413,7 @@ const postJson = async <T>(
   config: ApiClientConfig,
   body: Record<string, unknown>,
 ): Promise<T> => {
-  const response = await fetch(apiUrl(path, config, {}), {
+  const response = await apiFetch(apiUrl(path, config, {}), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -306,7 +429,7 @@ export const testGitHubConnection = async ({
   apiKey,
   fullName,
 }: ApiClientConfig & { fullName?: string | null }): Promise<GitHubConnectionTestResponse> => {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl("/github/connection-test", { apiBaseUrl, apiKey }, { full_name: fullName ?? undefined }),
     { headers: authHeaders(apiKey) },
   );
@@ -318,7 +441,7 @@ export const fetchGitHubRepositoryStatus = async ({
   apiKey,
   fullName,
 }: ApiClientConfig & { fullName: string }): Promise<GitHubRepositoryStatus> => {
-  const response = await fetch(
+  const response = await apiFetch(
     apiUrl("/github/repositories/status", { apiBaseUrl, apiKey }, { full_name: fullName }),
     { headers: authHeaders(apiKey) },
   );

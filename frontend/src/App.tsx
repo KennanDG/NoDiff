@@ -1310,7 +1310,40 @@ const App = () => {
       attached_files: attachedFiles,
     };
     clearChanges();
-    socketRef.current?.run(runRequest);
+
+    const client = socketRef.current;
+    if (!client) {
+      const error = "Coding agent WebSocket is not connected.";
+      dispatchRun({
+        type: "run.failed",
+        run_id: null,
+        thread_id: run.threadId ?? null,
+        node: null,
+        payload: { error },
+      });
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "agent", body: error, time: nowLabel() },
+      ]);
+      return;
+    }
+
+    try {
+      client.run(runRequest);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Coding agent WebSocket send failed.";
+      dispatchRun({
+        type: "run.failed",
+        run_id: null,
+        thread_id: run.threadId ?? null,
+        node: null,
+        payload: { error: message },
+      });
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "agent", body: message, time: nowLabel() },
+      ]);
+    }
   };
 
   

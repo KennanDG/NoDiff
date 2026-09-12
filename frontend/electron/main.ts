@@ -36,6 +36,22 @@ type DesktopDirectoryPickerOptions = {
   defaultPath?: string;
 };
 
+type DesktopApiRequest = {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+  timeoutMs?: number;
+};
+
+type DesktopApiResponse = {
+  status: number;
+  statusText: string;
+  ok: boolean;
+  headers: Record<string, string>;
+  body: string;
+};
+
 type SidecarLaunch = {
   command: string;
   args: string[];
@@ -282,6 +298,71 @@ function registerDesktopIpc() {
   // removeHandler keeps development main-process reloads from registering the
   // same channel more than once.
   ipcMain.removeHandler("desktop:select-directory");
+  ipcMain.removeHandler("desktop:api-request");
+
+  ipcMain.handle(
+    "desktop:api-request",
+    async (_event, request: DesktopApiRequest): Promise<DesktopApiResponse> => {
+      const baseUrl = process.env.AGENT_RUNTIME_API_BASE_URL;
+      const apiKey = process.env.AGENT_RUNTIME_API_KEY;
+      if (!baseUrl || !apiKey) {
+        throw new Error("The FastAPI runtime connection is not configured.");
+      }
+
+      let target: URL;
+      let runtimeOrigin: string;
+      try {
+        target = new URL(request.url);
+        runtimeOrigin = new URL(baseUrl).origin;
+      } catch {
+        throw new Error("Invalid FastAPI request URL.");
+      }
+
+      // The bridge is intentionally restricted to the single managed loopback
+      // sidecar. A compromised renderer cannot turn this into a generic HTTP proxy.
+      if (target.origin !== runtimeOrigin) {
+        throw new Error("Desktop API requests may only target the managed FastAPI sidecar.");
+      }
+
+      const method = (request.method ?? "GET").toUpperCase();
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+        throw new Error(`Unsupported desktop API method: ${method}`);
+      }
+
+      const headers = new Headers(request.headers ?? {});
+      headers.delete("host");
+      headers.delete("origin");
+      headers.delete("content-length");
+      headers.set("x-api-key", apiKey);
+
+      const timeoutMs = Math.min(
+        Math.max(Number(request.timeoutMs ?? 135_000), 1_000),
+        180_000,
+      );
+
+      const response = await fetch(target, {
+        method,
+        headers,
+        body: method === "GET" || method === "HEAD" ? undefined : request.body ?? undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: "error",
+      });
+
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: responseHeaders,
+        body: await response.text(),
+      };
+    },
+  );
+
   ipcMain.handle(
     "desktop:select-directory",
     async (event, options?: DesktopDirectoryPickerOptions) => {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import logging
 import base64
 import binascii
 import mimetypes
@@ -60,6 +61,7 @@ from agent_runtime.config.constants import (
 
 
 router = APIRouter(prefix="/coding-agent", tags=["coding-agent"])
+logger = logging.getLogger(__name__)
 
 
 
@@ -709,15 +711,30 @@ def _public_result(state: dict[str, Any], thread_id: str) -> CodingAgentRunResul
     )
 
 
+def _queue_put_threadsafe(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    queue: asyncio.Queue[dict[str, Any] | None],
+    item: dict[str, Any] | None,
+) -> None:
+    # The queue is unbounded, so put_nowait is sufficient and avoids creating
+    # coroutine futures from the worker thread. This makes worker -> WebSocket
+    # handoff deterministic even while the app is beginning shutdown.
+    if loop.is_closed():
+        return
+    loop.call_soon_threadsafe(queue.put_nowait, item)
+
+
 def _send_threadsafe(
     *,
     loop: asyncio.AbstractEventLoop,
     queue: asyncio.Queue[dict[str, Any] | None],
     event: CodingAgentServerEvent,
 ) -> None:
-    asyncio.run_coroutine_threadsafe(
-        queue.put(jsonable_encoder(event.model_dump())),
-        loop,
+    _queue_put_threadsafe(
+        loop=loop,
+        queue=queue,
+        item=jsonable_encoder(event.model_dump()),
     )
 
 
@@ -730,6 +747,7 @@ def _stream_coding_agent_worker(
 ) -> None:
     
     thread_id = request.thread_id or _new_thread_id()
+    sandbox: CodingSandbox | None = None
 
     resolved_subtask_worker_count = (
         request.subtask_worker_count
@@ -822,16 +840,9 @@ def _stream_coding_agent_worker(
             else original_repo_root_path
         )
 
-        # initialize sandbox
-        sandbox = create_coding_sandbox(
-            repo_root=original_repo_root_path,
-            workspace_root=original_workspace_root_path,
-            run_id=run_id,
-        )
-
-        repo_root = str(sandbox.repo_root)
-        workspace_root = str(sandbox.workspace_root)
-
+        # Acknowledge the request before any potentially expensive filesystem copy
+        # or model/memory setup. Previously run.started was emitted only after the
+        # sandbox was ready, which made a slow Windows copy look like a dead socket.
         _send_threadsafe(
             loop=loop,
             queue=queue,
@@ -840,8 +851,8 @@ def _stream_coding_agent_worker(
                 run_id=run_id,
                 thread_id=thread_id,
                 payload={
-                    "repo_root": repo_root,
-                    "workspace_root": workspace_root,
+                    "repo_root": str(original_repo_root_path),
+                    "workspace_root": str(original_workspace_root_path),
                     "allow_write": request.allow_write,
                     "subtask_worker_count": cfg.max_subtask_workers,
                     # Compatibility alias for older frontends.
@@ -867,6 +878,23 @@ def _stream_coding_agent_worker(
                 },
             ),
         )
+        logger.info(
+            "Coding run %s accepted for %s (thread=%s)",
+            run_id,
+            original_repo_root_path,
+            thread_id,
+        )
+
+        # Initialize the isolated worktree after the acknowledgement.
+        sandbox = create_coding_sandbox(
+            repo_root=original_repo_root_path,
+            workspace_root=original_workspace_root_path,
+            run_id=run_id,
+        )
+
+        repo_root = str(sandbox.repo_root)
+        workspace_root = str(sandbox.workspace_root)
+        logger.info("Coding run %s sandbox ready at %s", run_id, sandbox.sandbox_root)
 
         try:
             attached_files, attachment_errors = _normalize_attached_files(
@@ -1044,8 +1072,31 @@ def _stream_coding_agent_worker(
         cleanup_coding_sandbox(sandbox, keep=False)
         return None
 
+    except Exception as exc:
+        logger.exception("Coding run %s failed", run_id)
+        if sandbox is not None:
+            try:
+                cleanup_coding_sandbox(sandbox, keep=False)
+            except Exception:
+                logger.exception("Failed to clean sandbox for coding run %s", run_id)
+
+        _send_threadsafe(
+            loop=loop,
+            queue=queue,
+            event=CodingAgentServerEvent(
+                type="run.failed",
+                run_id=run_id,
+                thread_id=thread_id,
+                payload={
+                    "error": str(exc) or exc.__class__.__name__,
+                    "error_type": exc.__class__.__name__,
+                },
+            ),
+        )
+        return None
+
     finally:
-        asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+        _queue_put_threadsafe(loop=loop, queue=queue, item=None)
 
 
 
@@ -1071,19 +1122,15 @@ async def _run_and_forward_events(
         )
     )
 
-    try:
-        while True:
-            event = await queue.get()
+    while True:
+        event = await queue.get()
 
-            if event is None:
-                break
+        if event is None:
+            break
 
-            await websocket.send_json(event)
+        await websocket.send_json(event)
 
-    finally:
-        pending_run = await worker_task
-    
-    return pending_run
+    return await worker_task
 
 
 
