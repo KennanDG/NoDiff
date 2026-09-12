@@ -41,8 +41,15 @@ import {
 import { selectVoiceContextAttachments, submitVoiceTurn } from "./lib/voiceAgentApi";
 import type { AgentMessage, AgentRunState, ChangeStatus, FileChange, RepositoryFile, RepositoryTreeEntry } from "./types";
 
-const apiBaseUrl = import.meta.env.VITE_AI_AGENTS_API_BASE ?? "http://0.0.0.0:8000";
-const apiKey = import.meta.env.VITE_AI_AGENTS_API_KEY ?? "";
+// In the Electron desktop build, the main process owns the FastAPI sidecar
+// connection and exposes the resolved loopback URL/API key through preload.
+// Vite env values remain the browser/development fallback only.
+const desktopRuntime = window.desktop?.runtime;
+const apiBaseUrl =
+  desktopRuntime?.apiBaseUrl?.replace(/\/+$/, "") ||
+  import.meta.env.VITE_AI_AGENTS_API_BASE ||
+  "http://127.0.0.1:8000";
+const apiKey = desktopRuntime?.apiKey || import.meta.env.VITE_AI_AGENTS_API_KEY || "";
 
 const configuredRepoRootRaw = (import.meta.env.VITE_CODING_AGENT_REPO_ROOT ?? "").trim();
 const configuredWorkspaceRootRaw = (import.meta.env.VITE_CODING_AGENT_WORKSPACE_ROOT ?? "").trim();
@@ -485,6 +492,10 @@ const App = () => {
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [githubRepositoryStatus, setGitHubRepositoryStatus] = useState<GitHubRepositoryStatus | null>(null);
   const [githubActionLoading, setGitHubActionLoading] = useState<string | null>(null);
+  // Repository source changes can overlap when the user abandons a slow GitHub
+  // import and switches back to a local folder. Only the newest selection is
+  // allowed to commit renderer state.
+  const repositorySelectionGenerationRef = useRef(0);
   const [githubActionMessage, setGitHubActionMessage] = useState<string | null>(null);
   const [githubActionError, setGitHubActionError] = useState<string | null>(null);
   const [githubPullRequestUrl, setGitHubPullRequestUrl] = useState<string | null>(null);
@@ -629,13 +640,14 @@ const App = () => {
     setGitHubPullRequestUrl(null);
   };
 
-  const selectGitHubRepository = useCallback(async (fullName: string) => {
+  const selectGitHubRepository = useCallback(async (fullName: string): Promise<boolean> => {
     const repository = githubRepositories.find((item) => item.full_name === fullName);
     if (!repository) {
       setGitHubActionError(`Repository is not available: ${fullName}`);
-      return;
+      return false;
     }
 
+    const selectionGeneration = ++repositorySelectionGenerationRef.current;
     setGitHubActionLoading("repository");
     clearGitHubActionFeedback();
 
@@ -646,10 +658,24 @@ const App = () => {
         fullName,
         ref: repository.default_branch,
       });
+
+      // The user may have selected a local folder while a slow clone/import was
+      // still running. In that case the backend checkout may finish, but it must
+      // not steal the active renderer selection.
+      if (selectionGeneration !== repositorySelectionGenerationRef.current) {
+        return false;
+      }
+
+      // The import response is authoritative for the managed checkout. Commit
+      // that selection immediately; tree/status hydration should not keep the
+      // source selector and native directory picker locked.
       setSelectedGitHubRepository(imported.full_name);
       setCurrentBranch(imported.ref);
-      await loadRepository(imported.repo_root);
-      await loadGitHubRepositoryStatus(imported.full_name);
+      setRepoRoot(imported.repo_root);
+      setRepoEntries([]);
+      setActivePath(null);
+      setActiveFile(null);
+      setRepoError(null);
       resetAgentWorkspace();
 
       const feedback = [`Using ${imported.full_name} on ${imported.ref}.`];
@@ -660,20 +686,32 @@ const App = () => {
         feedback.push(`Restored the saved local changes for ${imported.ref}.`);
       }
       setGitHubActionMessage(feedback.join(" "));
+
+      // Hydrate the explorer/status in the background. The selected repository
+      // root already came from the successful import response.
+      void loadRepository(imported.repo_root);
+      void loadGitHubRepositoryStatus(imported.full_name);
+      return true;
     } catch (error) {
-      setGitHubActionError(error instanceof Error ? error.message : "Failed to import GitHub repository.");
+      if (selectionGeneration === repositorySelectionGenerationRef.current) {
+        setGitHubActionError(error instanceof Error ? error.message : "Failed to import GitHub repository.");
+      }
+      return false;
     } finally {
-      setGitHubActionLoading(null);
+      if (selectionGeneration === repositorySelectionGenerationRef.current) {
+        setGitHubActionLoading(null);
+      }
     }
   }, [githubRepositories, loadGitHubRepositoryStatus, loadRepository, resetAgentWorkspace]);
 
-  const selectLocalRepository = useCallback(async (targetRoot: string) => {
+  const selectLocalRepository = useCallback(async (targetRoot: string): Promise<boolean> => {
     const normalizedRoot = targetRoot.trim();
     if (!normalizedRoot) {
       setGitHubActionError("Enter a local directory path.");
       return false;
     }
 
+    const selectionGeneration = ++repositorySelectionGenerationRef.current;
     setGitHubActionLoading("local-repository");
     clearGitHubActionFeedback();
 
@@ -694,6 +732,10 @@ const App = () => {
         return false;
       }
 
+      if (selectionGeneration !== repositorySelectionGenerationRef.current) {
+        return false;
+      }
+
       setLocalRepoRoot(resolvedRoot);
       setSelectedGitHubRepository(null);
       setCurrentBranch(null);
@@ -701,13 +743,20 @@ const App = () => {
       resetAgentWorkspace();
       setGitHubActionMessage(`Using local repository ${resolvedRoot}.`);
       return true;
+    } catch (error) {
+      if (selectionGeneration === repositorySelectionGenerationRef.current) {
+        setGitHubActionError(error instanceof Error ? error.message : "Failed to select local repository.");
+      }
+      return false;
     } finally {
-      setGitHubActionLoading(null);
+      if (selectionGeneration === repositorySelectionGenerationRef.current) {
+        setGitHubActionLoading(null);
+      }
     }
   }, [loadRepository, resetAgentWorkspace]);
 
-  const useLocalRepository = useCallback(async () => {
-    await selectLocalRepository(localRepoRoot);
+  const useLocalRepository = useCallback(async (): Promise<boolean> => {
+    return selectLocalRepository(localRepoRoot);
   }, [localRepoRoot, selectLocalRepository]);
 
   const browseLocalRepository = useCallback(async () => {
@@ -1261,7 +1310,40 @@ const App = () => {
       attached_files: attachedFiles,
     };
     clearChanges();
-    socketRef.current?.run(runRequest);
+
+    const client = socketRef.current;
+    if (!client) {
+      const error = "Coding agent WebSocket is not connected.";
+      dispatchRun({
+        type: "run.failed",
+        run_id: null,
+        thread_id: run.threadId ?? null,
+        node: null,
+        payload: { error },
+      });
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "agent", body: error, time: nowLabel() },
+      ]);
+      return;
+    }
+
+    try {
+      client.run(runRequest);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Coding agent WebSocket send failed.";
+      dispatchRun({
+        type: "run.failed",
+        run_id: null,
+        thread_id: run.threadId ?? null,
+        node: null,
+        payload: { error: message },
+      });
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "agent", body: message, time: nowLabel() },
+      ]);
+    }
   };
 
   

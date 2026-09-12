@@ -40,19 +40,52 @@ def _env_bool(
 
 
 def _allowed_origins() -> list[str]:
+    """Return explicit renderer origins allowed to call the loopback sidecar.
+
+    Electron development may move Vite to another free port, while packaged
+    file:// renderers use the serialized Origin value ``null``. Exact configured
+    origins are preserved here; localhost/loopback any-port support is provided
+    by ``_LOCAL_RENDERER_ORIGIN_REGEX`` below.
+    """
     raw = os.getenv("AGENT_RUNTIME_ALLOWED_ORIGINS")
+    origins = [item.strip() for item in raw.split(",") if item.strip()] if raw else []
 
-    if raw:
-        origins = [item.strip() for item in raw.split(",") if item.strip()]
-
-        if origins:
-            return origins
-
-    # Development fallback.
-    return [
+    # Keep deterministic fallbacks for standalone backend development and the
+    # packaged file:// renderer.
+    for origin in (
+        "null",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-    ]
+    ):
+        if origin not in origins:
+            origins.append(origin)
+
+    return origins
+
+
+_LOCAL_RENDERER_ORIGIN_REGEX = (
+    r"^(?:null|https?://(?:localhost|127\.0\.0\.1)(?::\d+)?)$"
+)
+
+
+async def _private_network_access_middleware(request, call_next):
+    """Allow Chromium/Electron local-network preflights to reach FastAPI.
+
+    New Chromium builds can issue an OPTIONS request containing
+    ``Access-Control-Request-Private-Network: true`` before a renderer calls a
+    loopback service. A normal 200 OPTIONS response is still rejected by the
+    browser unless the response explicitly opts into private-network access.
+    """
+    response = await call_next(request)
+
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("access-control-request-private-network", "").lower()
+        == "true"
+    ):
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+
+    return response
 
 
 @asynccontextmanager
@@ -79,12 +112,17 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
+        allow_origin_regex=_LOCAL_RENDERER_ORIGIN_REGEX,
         # The application authenticates with x-api-key rather than cookies, so
         # browser credential mode is not needed.
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Register this after CORSMiddleware so it wraps the CORS preflight response
+    # and can add Chromium's private-network opt-in header when requested.
+    app.middleware("http")(_private_network_access_middleware)
 
     app.include_router(health_router)
     app.include_router(coding_agent_router)

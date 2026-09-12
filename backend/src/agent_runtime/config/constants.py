@@ -56,6 +56,7 @@ IGNORED_REPOSITORY_DIRS = {
     "__pycache__",
     "build",
     "dist",
+    "dist-electron",
     "node_modules",
     "venv",
 }

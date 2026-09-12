@@ -36,6 +36,22 @@ type DesktopDirectoryPickerOptions = {
   defaultPath?: string;
 };
 
+type DesktopApiRequest = {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+  timeoutMs?: number;
+};
+
+type DesktopApiResponse = {
+  status: number;
+  statusText: string;
+  ok: boolean;
+  headers: Record<string, string>;
+  body: string;
+};
+
 type SidecarLaunch = {
   command: string;
   args: string[];
@@ -84,6 +100,10 @@ function configureRuntimeDataPaths() {
   process.env.CODING_AGENT_MEMORY_ENABLED ??= "true";
   process.env.CODING_AGENT_MEMORY_SETUP ??= "true";
   process.env.AGENT_RUNTIME_INITIALIZE_MEMORY_ON_STARTUP ??= "true";
+
+  // NoDiff is a long-lived desktop process. Keep LangSmith trace uploads in
+  // the background so request completion never waits on trace transport.
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = "true";
 }
 
 configureRuntimeDataPaths();
@@ -207,7 +227,7 @@ async function startBackendSidecar() {
   const launch = resolveSidecarLaunch();
   backendSidecar = spawn(launch.command, launch.args, {
     cwd: launch.cwd,
-    env: { ...process.env },
+    env: { ...process.env, PYTHONUNBUFFERED: "1" },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -282,6 +302,89 @@ function registerDesktopIpc() {
   // removeHandler keeps development main-process reloads from registering the
   // same channel more than once.
   ipcMain.removeHandler("desktop:select-directory");
+  ipcMain.removeHandler("desktop:api-request");
+
+  ipcMain.handle(
+    "desktop:api-request",
+    async (_event, request: DesktopApiRequest): Promise<DesktopApiResponse> => {
+      const baseUrl = process.env.AGENT_RUNTIME_API_BASE_URL;
+      const apiKey = process.env.AGENT_RUNTIME_API_KEY;
+      if (!baseUrl || !apiKey) {
+        throw new Error("The FastAPI runtime connection is not configured.");
+      }
+
+      let target: URL;
+      let runtimeOrigin: string;
+      try {
+        target = new URL(request.url);
+        runtimeOrigin = new URL(baseUrl).origin;
+      } catch {
+        throw new Error("Invalid FastAPI request URL.");
+      }
+
+      // The bridge is intentionally restricted to the single managed loopback
+      // sidecar. A compromised renderer cannot turn this into a generic HTTP proxy.
+      if (target.origin !== runtimeOrigin) {
+        throw new Error("Desktop API requests may only target the managed FastAPI sidecar.");
+      }
+
+      const method = (request.method ?? "GET").toUpperCase();
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) {
+        throw new Error(`Unsupported desktop API method: ${method}`);
+      }
+
+      const headers = new Headers(request.headers ?? {});
+      headers.delete("host");
+      headers.delete("origin");
+      headers.delete("content-length");
+      headers.set("x-api-key", apiKey);
+
+      const timeoutMs = Math.min(
+        Math.max(Number(request.timeoutMs ?? 300_000), 1_000),
+        600_000,
+      );
+
+      const requestId = randomBytes(5).toString("hex");
+      const startedAt = Date.now();
+      console.log(
+        `[desktop-api:${requestId}] -> ${method} ${target.pathname}${target.search} timeout=${timeoutMs}ms`,
+      );
+
+      try {
+        const response = await fetch(target, {
+          method,
+          headers,
+          body: method === "GET" || method === "HEAD" ? undefined : request.body ?? undefined,
+          signal: AbortSignal.timeout(timeoutMs),
+          redirect: "error",
+        });
+
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          responseHeaders[key] = value;
+        });
+        const body = await response.text();
+        console.log(
+          `[desktop-api:${requestId}] <- ${response.status} ${method} ${target.pathname} ${Date.now() - startedAt}ms`,
+        );
+
+        return {
+          status: response.status,
+          statusText: response.statusText,
+          ok: response.ok,
+          headers: responseHeaders,
+          body,
+        };
+      } catch (error) {
+        console.error(
+          `[desktop-api:${requestId}] !! ${method} ${target.pathname} failed after ${Date.now() - startedAt}ms`,
+          error,
+        );
+        throw error;
+      }
+    },
+  );
+
   ipcMain.handle(
     "desktop:select-directory",
     async (event, options?: DesktopDirectoryPickerOptions) => {

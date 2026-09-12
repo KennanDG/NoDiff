@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import fnmatch
 import json
+import logging
 import os
+import time
 
 import shutil
 import subprocess
@@ -52,6 +54,7 @@ class _AutoStashRestoreError(RuntimeError):
 
 
 router = APIRouter(prefix="/github", tags=["github"])
+logger = logging.getLogger(__name__)
 
 
 
@@ -183,16 +186,23 @@ class GitHubService:
 
     def _git_env(self) -> dict[str, str]:
         token = self._require_token()
-        basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+
+        basic = base64.b64encode(
+            f"x-access-token:{token}".encode("utf-8")
+        ).decode("ascii")
+
         env = os.environ.copy()
+
         env.update(
             {
                 "GIT_TERMINAL_PROMPT": "0",
+                "GCM_INTERACTIVE": "Never",
                 "GIT_CONFIG_COUNT": "1",
                 "GIT_CONFIG_KEY_0": "http.extraHeader",
                 "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
             }
         )
+
         return env
 
     def _git_error_text(self, completed: subprocess.CompletedProcess[str]) -> str:
@@ -257,22 +267,43 @@ class GitHubService:
                 detail="Git is not installed on the agent_runtime backend host.",
             )
 
+        creationflags = 0
+
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+
         try:
             completed = subprocess.run(
                 ["git", *args],
                 cwd=str(cwd) if cwd else None,
                 env=self._git_env(),
-                check=False,
-                capture_output=True,
+                stdin=subprocess.DEVNULL,          # IMPORTANT
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=self.timeout_seconds,
+                check=False,
+                creationflags=creationflags,
             )
         except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=504, detail="Git operation timed out.") from exc
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Git operation timed out: "
+                    f"git {' '.join(args[:3])}"
+                ),
+            ) from exc
 
         if check and completed.returncode != 0:
-            self._raise_git_failure(completed, operation=args[0] if args else "Git")
+            self._raise_git_failure(
+                completed,
+                operation=args[0] if args else "Git",
+            )
+
         return completed
+
+
 
     def _assert_git_transport_access(self, full_name: str, clone_url: str) -> None:
         completed = self._run_git(["ls-remote", "--heads", clone_url], check=False)
@@ -687,7 +718,21 @@ class GitHubService:
         restored_target_changes = False
         previous_ref: str | None = None
 
+        lock_started_at = time.monotonic()
+        logger.info(
+            "GitHub import waiting for lock: repo=%s ref=%s refresh=%s target=%s",
+            full_name,
+            ref,
+            refresh,
+            target,
+        )
+
         with IMPORT_LOCK:
+            logger.info(
+                "GitHub import lock acquired: repo=%s wait=%.3fs",
+                full_name,
+                time.monotonic() - lock_started_at,
+            )
             reused = target.exists()
 
             if reused:
@@ -1166,11 +1211,34 @@ def github_repositories(
 def import_github_repository(
     request: GitHubRepositoryImportRequest,
 ) -> GitHubRepositoryImportResponse:
-    return GitHubService().import_repository(
-        full_name=request.full_name,
-        requested_ref=request.ref,
-        refresh=request.refresh,
+    started_at = time.monotonic()
+    logger.info(
+        "GitHub import request received: repo=%s ref=%s refresh=%s",
+        request.full_name,
+        request.ref,
+        request.refresh,
     )
+    try:
+        result = GitHubService().import_repository(
+            full_name=request.full_name,
+            requested_ref=request.ref,
+            refresh=request.refresh,
+        )
+        logger.info(
+            "GitHub import completed: repo=%s ref=%s reused=%s elapsed=%.3fs",
+            result.full_name,
+            result.ref,
+            result.reused_existing_checkout,
+            time.monotonic() - started_at,
+        )
+        return result
+    except Exception:
+        logger.exception(
+            "GitHub import failed: repo=%s elapsed=%.3fs",
+            request.full_name,
+            time.monotonic() - started_at,
+        )
+        raise
 
 
 @router.get("/repositories/branches", response_model=list[GitHubBranchSummary])

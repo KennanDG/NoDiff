@@ -323,6 +323,7 @@ const makeSocketUrl = (apiBaseUrl: string, apiKey?: string) => {
 export const createCodingAgentSocket = (options: CodingAgentSocketOptions) => {
   const socket = new WebSocket(makeSocketUrl(options.apiBaseUrl, options.apiKey));
   const pendingMessages: string[] = [];
+  let manuallyClosed = false;
 
   const sendMessage = (message: CodingAgentClientMessage) => {
     const serialized = JSON.stringify(message);
@@ -332,7 +333,15 @@ export const createCodingAgentSocket = (options: CodingAgentSocketOptions) => {
       return;
     }
 
-    pendingMessages.push(serialized);
+    if (socket.readyState === WebSocket.CONNECTING) {
+      pendingMessages.push(serialized);
+      return;
+    }
+
+    // Never queue messages onto a socket that can no longer open. The previous
+    // behavior silently kept run.request messages forever after a disconnect,
+    // which left the renderer showing a permanently running session.
+    throw new Error("Coding agent WebSocket is not connected.");
   };
 
   socket.addEventListener("open", () => {
@@ -354,7 +363,8 @@ export const createCodingAgentSocket = (options: CodingAgentSocketOptions) => {
   });
 
   socket.addEventListener("close", () => {
-    options.onClose?.();
+    pendingMessages.length = 0;
+    if (!manuallyClosed) options.onClose?.();
   });
 
   socket.addEventListener("error", (event) => {
@@ -398,6 +408,8 @@ export const createCodingAgentSocket = (options: CodingAgentSocketOptions) => {
     },
 
     close() {
+      manuallyClosed = true;
+      pendingMessages.length = 0;
       socket.close();
     },
   };

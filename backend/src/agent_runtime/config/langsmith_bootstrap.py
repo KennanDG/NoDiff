@@ -1,20 +1,32 @@
-# ai_agents/config/langsmith_bootstrap.py
 import os
+
 from agent_runtime.config.settings import settings
 
-def ensure_langsmith_env() -> None:
-    # Resolve key (env first, secret fallback)
-    api_key = settings.resolved_langchain_api_key()
 
+def ensure_langsmith_env() -> None:
+    """Populate LangSmith environment variables before traced runtimes are built."""
+
+    api_key = settings.resolved_langchain_api_key()
     if api_key:
+        # Current LangSmith names.
+        os.environ["LANGSMITH_API_KEY"] = api_key
+        # Legacy LangChain alias retained for installed integrations that still read it.
         os.environ["LANGCHAIN_API_KEY"] = api_key
 
-    # Endpoint: LangSmith prefers LANGCHAIN_ENDPOINT
-    # Your Settings currently uses LANGSMITH_API_URL, so support both.
-    endpoint = getattr(settings, "langsmith_api_url", None) or os.environ.get("LANGCHAIN_ENDPOINT")
-
+    endpoint = (
+        getattr(settings, "langsmith_api_url", None)
+        or os.environ.get("LANGSMITH_ENDPOINT")
+        or os.environ.get("LANGCHAIN_ENDPOINT")
+    )
     if endpoint:
+        os.environ["LANGSMITH_ENDPOINT"] = endpoint
         os.environ["LANGCHAIN_ENDPOINT"] = endpoint
 
-    # Force tracing on (must be STRING in Lambda/ECS env anyway)
+    project = getattr(settings, "langchain_project", None)
+    if project:
+        os.environ["LANGSMITH_PROJECT"] = project
+        os.environ["LANGCHAIN_PROJECT"] = project
+
+    # Current name plus the legacy alias used by older LangChain releases.
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
