@@ -5,8 +5,14 @@ interface DesktopDirectoryPickerOptions {
   defaultPath?: string;
 }
 
+interface DesktopRuntimeConnection {
+  apiBaseUrl: string;
+  apiKey: string;
+}
+
 interface DesktopBridge {
   platform: string;
+  runtime?: DesktopRuntimeConnection;
 
   selectDirectory?: (
     options?: DesktopDirectoryPickerOptions,

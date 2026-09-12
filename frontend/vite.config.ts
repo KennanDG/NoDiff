@@ -8,6 +8,16 @@ import electron from "vite-plugin-electron/simple";
 const rootDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // App.tsx already reads these Vite environment keys throughout the renderer.
+  // Replace them with the runtime connection Electron creates before FastAPI
+  // starts. Vite/esbuild requires define replacements to be literals or simple
+  // identifier/property chains, so keep these as direct property accesses.
+  define: {
+    "import.meta.env.VITE_AI_AGENTS_API_BASE":
+      "window.desktop.runtime.apiBaseUrl",
+    "import.meta.env.VITE_AI_AGENTS_API_KEY":
+      "window.desktop.runtime.apiKey",
+  },
   plugins: [
     react(),
     tailwindcss(),

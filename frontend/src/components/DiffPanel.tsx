@@ -1,190 +1,115 @@
 import { DiffEditor } from "@monaco-editor/react";
-import {
-  // Check,
-  Clipboard,
-  Columns2,
-  Download,
-  FileCode2,
-  MoreHorizontal,
-  // Undo2,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { FileCode2 } from "lucide-react";
+import { useMemo } from "react";
 import type { FileChange, RepositoryFile } from "../types";
 
-interface DiffPanelProps {
+
+type DiffPanelProps = {
   file: RepositoryFile | null;
-  change?: FileChange | null;
+  change: FileChange | null;
   isLoading?: boolean;
   error?: string | null;
-  // canApprove?: boolean;
-  // onAcceptFile?: (path: string) => void;
-  // onRejectChanges?: () => void;
-}
-
-const modelPath = (side: "repo" | "sandbox", path: string) => {
-  const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "");
-  const encoded = normalized
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
-
-  return `file:///${side}/${encoded || "untitled.txt"}`;
 };
+
+
+const languageFromPath = (path: string) => {
+  const extension = path.split(".").at(-1)?.toLowerCase();
+
+  switch (extension) {
+    case "c":
+    case "cc":
+    case "cpp":
+    case "cxx":
+    case "c++":
+    case "h":
+    case "hh":
+    case "hpp":
+    case "hxx":
+      return "cpp";
+    case "css":
+      return "css";
+    case "html":
+      return "html";
+    case "java":
+      return "java";
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "json":
+      return "json";
+    case "md":
+      return "markdown";
+    case "py":
+      return "python";
+    case "rs":
+      return "rust";
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "yml":
+    case "yaml":
+      return "yaml";
+    default:
+      return "plaintext";
+  }
+};
+
+
+const normalizeModelPath = (path: string, suffix: string) => {
+  const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "");
+  return `file:///nodiff/${suffix}/${encodeURI(normalized)}`;
+};
+
+
+const truncate = (value: string, maxLength: number) => {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}…`;
+};
+
+
+const emptyFile = {
+  path: "",
+  content: "",
+  language: "plaintext",
+};
+
 
 export const DiffPanel = ({
   file,
   change,
   isLoading = false,
-  error,
-  // canApprove = false,
-  // onAcceptFile,
-  // onRejectChanges,
+  error = null,
 }: DiffPanelProps) => {
-  const path = change?.path ?? file?.path ?? "No file selected";
-  const language = change?.language ?? file?.language ?? "plaintext";
-  const original = change?.original ?? file?.content ?? "";
-  const modified = change?.modified ?? file?.content ?? "";
-  const additions = change?.additions ?? 0;
-  const deletions = change?.deletions ?? 0;
+  const effectiveFile = file ?? emptyFile;
+  const path = change?.path ?? effectiveFile.path;
+  const language = change?.language || effectiveFile.language || languageFromPath(path);
   const hasChange = Boolean(change);
+  const original = change?.original ?? effectiveFile.content;
+  const modified = change?.modified ?? effectiveFile.content;
 
-  const [renderSideBySide, setRenderSideBySide] = useState(true);
-  const [ignoreTrimWhitespace, setIgnoreTrimWhitespace] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  const originalModelPath = useMemo(() => modelPath("repo", path), [path]);
-  const modifiedModelPath = useMemo(() => modelPath("sandbox", path), [path]);
-
-  useEffect(() => {
-    if (!moreOpen) return;
-
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setMoreOpen(false);
-      }
-    };
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMoreOpen(false);
-    };
-
-    window.addEventListener("mousedown", closeOnOutsideClick);
-    window.addEventListener("keydown", closeOnEscape);
-
-    return () => {
-      window.removeEventListener("mousedown", closeOnOutsideClick);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [moreOpen]);
-
-  useEffect(() => {
-    setActionMessage(null);
-    setMoreOpen(false);
-  }, [path]);
-
-  const copyText = async (value: string, successMessage: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setActionMessage(successMessage);
-    } catch {
-      setActionMessage("Clipboard access was blocked by the browser.");
-    } finally {
-      setMoreOpen(false);
-    }
-  };
-
-  const downloadModifiedFile = () => {
-    const fileName = path.split(/[\\/]/).at(-1) ?? "modified-file.txt";
-    const url = URL.createObjectURL(new Blob([modified], { type: "text/plain;charset=utf-8" }));
-    const anchor = document.createElement("a");
-
-    anchor.href = url;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-
-    setActionMessage(`Downloaded ${fileName}.`);
-    setMoreOpen(false);
-  };
+  const originalModelPath = useMemo(
+    () => normalizeModelPath(path || "untitled", "original"),
+    [path],
+  );
+  const modifiedModelPath = useMemo(
+    () => normalizeModelPath(path || "untitled", "modified"),
+    [path],
+  );
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
-      <header className="relative flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel-soft px-3">
-        <FileCode2 size={14} className="text-accent-light" />
-        <span className="min-w-0 truncate font-mono text-[11px] text-ink-soft">{path}</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          {hasChange ? (
-            <>
-              <span className="font-mono text-[10px] text-emerald-300">+{additions}</span>
-              <span className="font-mono text-[10px] text-rose-300">−{deletions}</span>
-            </>
-          ) : null}
-
-          <button
-            type="button"
-            className={`icon-button ${renderSideBySide ? "bg-selected text-accent-light" : ""}`}
-            aria-label={renderSideBySide ? "Use inline diff" : "Use side-by-side diff"}
-            aria-pressed={renderSideBySide}
-            title={renderSideBySide ? "Switch to inline diff" : "Switch to side-by-side diff"}
-            onClick={() => setRenderSideBySide((current) => !current)}
-            disabled={!file && !change}
-          >
-            <Columns2 size={14} />
-          </button>
-
-          <div ref={menuRef} className="relative">
-            <button
-              type="button"
-              className={`icon-button ${moreOpen ? "bg-selected text-ink-soft" : ""}`}
-              aria-label="More diff actions"
-              aria-expanded={moreOpen}
-              title="More actions"
-              onClick={() => setMoreOpen((current) => !current)}
-              disabled={!file && !change}
-            >
-              <MoreHorizontal size={15} />
-            </button>
-
-            {moreOpen ? (
-              <div className="absolute right-0 top-8 z-30 w-52 overflow-hidden rounded-md border border-line-strong bg-panel shadow-2xl">
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-ink-soft hover:bg-hover"
-                  onClick={() => void copyText(path, "Copied file path.")}
-                >
-                  <Clipboard size={13} /> Copy file path
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-ink-soft hover:bg-hover"
-                  onClick={() => void copyText(modified, "Copied modified contents.")}
-                >
-                  <Clipboard size={13} /> Copy modified contents
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-ink-soft hover:bg-hover"
-                  onClick={downloadModifiedFile}
-                >
-                  <Download size={13} /> Download modified file
-                </button>
-                <label className="flex cursor-pointer items-center gap-2 border-t border-line px-3 py-2 text-[11px] text-ink-soft hover:bg-hover">
-                  <input
-                    type="checkbox"
-                    checked={ignoreTrimWhitespace}
-                    onChange={(event) => setIgnoreTrimWhitespace(event.target.checked)}
-                    className="accent-accent"
-                  />
-                  Ignore trim whitespace
-                </label>
-              </div>
-            ) : null}
-          </div>
+    <section className="flex min-h-0 flex-1 flex-col bg-panel">
+      <header className="flex h-10 shrink-0 items-center gap-3 border-b border-line px-3">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-ink-soft">
+          <FileCode2 size={14} className="shrink-0 text-accent" />
+          <span className="truncate font-medium text-ink" title={path || "No file selected"}>
+            {path ? truncate(path, 90) : "No file selected"}
+          </span>
         </div>
+        {hasChange && (
+          <span className="ml-auto rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-accent">
+            {change?.status ?? "modified"}
+          </span>
+        )}
       </header>
 
       <div className="min-h-0 flex-1">
@@ -218,7 +143,10 @@ export const DiffPanel = ({
                     moduleResolution: typescript.ModuleResolutionKind.NodeJs,
                     noEmit: true,
                     skipLibCheck: true,
-                    target: typescript.ScriptTarget.ES2022,
+                    // Monaco's bundled TypeScript enum currently exposes targets
+                    // through ES2020. Using that supported enum keeps the editor
+                    // type-safe while still parsing modern JS/TS syntax.
+                    target: typescript.ScriptTarget.ES2020,
                   };
                   const diagnosticsOptions = {
                     noSemanticValidation: true,
@@ -238,51 +166,27 @@ export const DiffPanel = ({
                   enableSplitViewResizing: true,
                   fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, monospace",
                   fontSize: 12,
-                  ignoreTrimWhitespace,
-                  lineHeight: 20,
+                  glyphMargin: false,
+                  ignoreTrimWhitespace: false,
+                  lineNumbers: "on",
                   minimap: { enabled: false },
                   originalEditable: false,
-                  padding: { top: 12, bottom: 12 },
+                  readOnly: true,
                   renderOverviewRuler: false,
-                  renderSideBySide,
                   scrollBeyondLastLine: false,
-                  wordWrap: "on",
+                  wordWrap: "off",
                 }}
               />
             );
           }
-          return <div className="grid h-full place-items-center text-xs text-muted">Select a repository file to preview it.</div>;
+
+          return (
+            <div className="grid h-full place-items-center px-8 text-center text-sm leading-6 text-muted">
+              Select a repository file or run the agent to review a diff.
+            </div>
+          );
         })()}
       </div>
-
-      <footer className="flex h-12 shrink-0 items-center justify-between gap-3 border-t border-line bg-panel-soft px-3">
-        <p className="min-w-0 truncate text-[10px] text-muted">
-          {actionMessage ?? (hasChange
-            ? "Review this file before applying the patch."
-            : "Repository preview. Agent changes will appear here when a run produces diffs.")}
-        </p>
-        {/* {hasChange ? (
-          <div className="flex shrink-0 gap-2">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!canApprove}
-              onClick={onRejectChanges}
-            >
-              <Undo2 size={13} /> Reject
-            </button>
-
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!canApprove || !change?.path}
-              onClick={() => change?.path && onAcceptFile?.(change.path)}
-            >
-              <Check size={13} /> Accept file
-            </button>
-          </div>
-        ) : null} */}
-      </footer>
     </section>
   );
 };

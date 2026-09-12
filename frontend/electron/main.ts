@@ -1,5 +1,8 @@
-import path from "node:path";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
+import { createServer } from "node:net";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   app,
@@ -14,6 +17,7 @@ const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const applicationRoot = path.join(currentDirectory, "..");
 const developmentServerUrl = process.env.VITE_DEV_SERVER_URL;
 const applicationDataDirectory = path.join(app.getPath("appData"), "NoDiff");
+const backendSourceDirectory = path.resolve(applicationRoot, "..", "backend");
 
 // Pin Electron's own profile to the product name before ready. The agent runtime
 // uses a dedicated child so Chromium cache/storage and backend state never mix.
@@ -32,11 +36,21 @@ type DesktopDirectoryPickerOptions = {
   defaultPath?: string;
 };
 
+type SidecarLaunch = {
+  command: string;
+  args: string[];
+  cwd: string;
+};
+
+let backendSidecar: ChildProcessWithoutNullStreams | null = null;
+let backendShutdownPromise: Promise<void> | null = null;
+let quitAfterBackendStops = false;
+
 function configureRuntimeDataPaths() {
   mkdirSync(memoryDirectory, { recursive: true });
 
   // A managed backend inherits one complete, explicit layout. These assignments
-  // happen before any future backend child process is launched.
+  // happen before the backend child process is launched.
   process.env.AGENT_RUNTIME_DATA_DIR = runtimeDataDirectory;
   process.env.AGENT_RUNTIME_CONFIG_PATH = path.join(
     runtimeDataDirectory,
@@ -73,6 +87,183 @@ function configureRuntimeDataPaths() {
 }
 
 configureRuntimeDataPaths();
+
+function reserveLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Unable to reserve a loopback port for the FastAPI sidecar."));
+        return;
+      }
+
+      const { port } = address;
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(port);
+      });
+    });
+  });
+}
+
+async function configureRuntimeConnection() {
+  const configuredPort = Number.parseInt(process.env.AGENT_RUNTIME_PORT ?? "", 10);
+  const port = Number.isInteger(configuredPort) && configuredPort > 0
+    ? configuredPort
+    : await reserveLoopbackPort();
+
+  process.env.AGENT_RUNTIME_HOST = "127.0.0.1";
+  process.env.AGENT_RUNTIME_PORT = String(port);
+  process.env.AGENT_RUNTIME_API_BASE_URL = `http://127.0.0.1:${port}`;
+  process.env.AGENT_RUNTIME_API_KEY ??= randomBytes(32).toString("base64url");
+
+  // The packaged renderer is loaded from file:// and therefore sends a null
+  // Origin on cross-origin requests. Development continues to use Vite's origin.
+  if (!process.env.AGENT_RUNTIME_ALLOWED_ORIGINS) {
+    process.env.AGENT_RUNTIME_ALLOWED_ORIGINS = developmentServerUrl
+      ? new URL(developmentServerUrl).origin
+      : "null";
+  }
+}
+
+function resolveSidecarLaunch(): SidecarLaunch {
+  if (app.isPackaged) {
+    if (process.platform !== "win32") {
+      throw new Error("The packaged FastAPI sidecar is currently configured for Windows builds only.");
+    }
+
+    const sidecarDirectory = path.join(
+      process.resourcesPath,
+      "backend",
+      "nodiff-agent-runtime",
+    );
+    const executable = path.join(sidecarDirectory, "nodiff-agent-runtime.exe");
+
+    if (!existsSync(executable)) {
+      throw new Error(
+        `FastAPI sidecar executable was not packaged at ${executable}. ` +
+          "Run the backend PyInstaller build before electron-builder.",
+      );
+    }
+
+    return {
+      command: executable,
+      args: [],
+      cwd: sidecarDirectory,
+    };
+  }
+
+  return {
+    command: "uv",
+    args: ["run", "python", "-m", "agent_runtime.api.main"],
+    cwd: backendSourceDirectory,
+  };
+}
+
+function backendIsRunning() {
+  return backendSidecar !== null && backendSidecar.exitCode === null;
+}
+
+async function waitForBackendReady(timeoutMs = 45_000) {
+  const baseUrl = process.env.AGENT_RUNTIME_API_BASE_URL;
+  if (!baseUrl) throw new Error("FastAPI base URL was not configured.");
+
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown = null;
+
+  while (Date.now() < deadline) {
+    if (backendSidecar && backendSidecar.exitCode !== null) {
+      throw new Error(
+        `FastAPI sidecar exited before becoming ready (exit code ${backendSidecar.exitCode}).`,
+      );
+    }
+
+    try {
+      const response = await fetch(`${baseUrl}/health`, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.ok) return;
+      lastError = new Error(`Health check returned HTTP ${response.status}.`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error(
+    `FastAPI sidecar did not become ready within ${timeoutMs / 1000} seconds.` +
+      (lastError instanceof Error ? ` ${lastError.message}` : ""),
+  );
+}
+
+async function startBackendSidecar() {
+  if (backendIsRunning()) return;
+
+  const launch = resolveSidecarLaunch();
+  backendSidecar = spawn(launch.command, launch.args, {
+    cwd: launch.cwd,
+    env: { ...process.env },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  backendSidecar.stdout.on("data", (chunk: Buffer) => {
+    console.log(`[FastAPI] ${chunk.toString().trimEnd()}`);
+  });
+  backendSidecar.stderr.on("data", (chunk: Buffer) => {
+    console.error(`[FastAPI] ${chunk.toString().trimEnd()}`);
+  });
+  backendSidecar.once("error", (error) => {
+    console.error("FastAPI sidecar process error", error);
+  });
+  backendSidecar.once("exit", (code, signal) => {
+    console.log(`FastAPI sidecar exited (code=${String(code)}, signal=${String(signal)}).`);
+  });
+
+  await waitForBackendReady();
+}
+
+async function stopBackendSidecar() {
+  const child = backendSidecar;
+  if (!child || child.exitCode !== null) {
+    backendSidecar = null;
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceKillTimer);
+      resolve();
+    };
+
+    const forceKillTimer = setTimeout(() => {
+      console.warn("FastAPI sidecar did not shut down gracefully; terminating it.");
+      child.kill();
+      finish();
+    }, 7_500);
+
+    child.once("exit", finish);
+
+    try {
+      child.stdin.write("shutdown\n");
+      child.stdin.end();
+    } catch (error) {
+      console.error("Unable to send graceful shutdown to FastAPI sidecar", error);
+      child.kill();
+      finish();
+    }
+  });
+
+  backendSidecar = null;
+}
 
 function existingDirectory(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
@@ -123,7 +314,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: "#090b10",
-    title: "Coding Agent",
+    title: "NoDiff",
     webPreferences: {
       preload: path.join(currentDirectory, "preload.mjs"),
       contextIsolation: true,
@@ -144,15 +335,51 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  app.setAppUserModelId("com.kennangauthier.nodiff");
   registerDesktopIpc();
-  createWindow();
+
+  try {
+    await configureRuntimeConnection();
+    await startBackendSidecar();
+    createWindow();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Unable to initialize NoDiff", error);
+    dialog.showErrorBox(
+      "NoDiff could not start",
+      `The local FastAPI runtime failed to initialize.\n\n${message}`,
+    );
+    await stopBackendSidecar();
+    quitAfterBackendStops = true;
+    app.quit();
+    return;
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+app.on("before-quit", (event) => {
+  if (quitAfterBackendStops || !backendIsRunning()) return;
+
+  // Keep Electron alive until FastAPI has completed its graceful shutdown.
+  event.preventDefault();
+  if (!backendShutdownPromise) {
+    backendShutdownPromise = stopBackendSidecar().finally(() => {
+      quitAfterBackendStops = true;
+      app.quit();
+    });
+  }
+});
+
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+process.on("exit", () => {
+  // Last-resort cleanup for abnormal process teardown; the normal path is the
+  // asynchronous before-quit handler above.
+  if (backendIsRunning()) backendSidecar?.kill();
 });
