@@ -223,7 +223,7 @@ async function startBackendSidecar() {
   const launch = resolveSidecarLaunch();
   backendSidecar = spawn(launch.command, launch.args, {
     cwd: launch.cwd,
-    env: { ...process.env },
+    env: { ...process.env, PYTHONUNBUFFERED: "1" },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -336,30 +336,48 @@ function registerDesktopIpc() {
       headers.set("x-api-key", apiKey);
 
       const timeoutMs = Math.min(
-        Math.max(Number(request.timeoutMs ?? 135_000), 1_000),
-        180_000,
+        Math.max(Number(request.timeoutMs ?? 300_000), 1_000),
+        600_000,
       );
 
-      const response = await fetch(target, {
-        method,
-        headers,
-        body: method === "GET" || method === "HEAD" ? undefined : request.body ?? undefined,
-        signal: AbortSignal.timeout(timeoutMs),
-        redirect: "error",
-      });
+      const requestId = randomBytes(5).toString("hex");
+      const startedAt = Date.now();
+      console.log(
+        `[desktop-api:${requestId}] -> ${method} ${target.pathname}${target.search} timeout=${timeoutMs}ms`,
+      );
 
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
+      try {
+        const response = await fetch(target, {
+          method,
+          headers,
+          body: method === "GET" || method === "HEAD" ? undefined : request.body ?? undefined,
+          signal: AbortSignal.timeout(timeoutMs),
+          redirect: "error",
+        });
 
-      return {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        headers: responseHeaders,
-        body: await response.text(),
-      };
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          responseHeaders[key] = value;
+        });
+        const body = await response.text();
+        console.log(
+          `[desktop-api:${requestId}] <- ${response.status} ${method} ${target.pathname} ${Date.now() - startedAt}ms`,
+        );
+
+        return {
+          status: response.status,
+          statusText: response.statusText,
+          ok: response.ok,
+          headers: responseHeaders,
+          body,
+        };
+      } catch (error) {
+        console.error(
+          `[desktop-api:${requestId}] !! ${method} ${target.pathname} failed after ${Date.now() - startedAt}ms`,
+          error,
+        );
+        throw error;
+      }
     },
   );
 

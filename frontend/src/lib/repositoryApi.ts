@@ -110,7 +110,7 @@ const apiFetch = async (
   return fetch(url, init);
 };
 
-const GITHUB_IMPORT_TIMEOUT_MS = 20_000;
+const GITHUB_IMPORT_TIMEOUT_MS = 420_000;
 
 const fetchWithTimeout = async (
   url: URL,
@@ -146,18 +146,30 @@ const fetchWithTimeout = async (
       cache: "no-store",
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    const detail = error instanceof Error ? error.message : String(error);
+    const timedOut =
+      (error instanceof DOMException && error.name === "AbortError") ||
+      (error instanceof Error && error.name === "TimeoutError") ||
+      /timeout|timed out|aborted due to timeout/i.test(detail);
+
+    if (timedOut) {
+      if (window.desktop?.apiRequest) {
+        throw new Error(
+          `${operation} timed out after ${Math.round(timeoutMs / 1000)} seconds while Electron main was waiting for FastAPI. ` +
+            "Desktop API requests bypass browser CORS, so no OPTIONS preflight is expected. Check the Electron terminal for [desktop-api] and [github-import] timing logs.",
+        );
+      }
+
       throw new Error(
-        `${operation} timed out after ${Math.round(timeoutMs / 1000)} seconds. ` +
-          "If FastAPI only logged an OPTIONS request, the browser rejected the CORS/private-network preflight before sending the POST.",
+        `${operation} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
       );
     }
 
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `${operation} could not be completed by the renderer. ${detail}. ` +
-        "Check the Electron DevTools Network tab: a 200 OPTIONS without a following POST indicates a rejected preflight, not a successful import.",
-    );
+    if (window.desktop?.apiRequest) {
+      throw new Error(`${operation} failed through the Electron desktop API bridge. ${detail}`);
+    }
+
+    throw new Error(`${operation} could not be completed by the renderer. ${detail}`);
   } finally {
     clearTimeout(timeout);
   }

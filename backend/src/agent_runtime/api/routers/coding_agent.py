@@ -894,6 +894,43 @@ def _stream_coding_agent_worker(
             thread_id,
         )
 
+        # Read-only runs do not need a full repository copy. The implementation
+        # layer already honors allow_write=False and produces proposed edits in
+        # memory. Avoiding copytree removes a major Windows startup bottleneck and
+        # avoids copying generated/runtime caches. Writable runs still use the
+        # isolated sandbox so validation and patching cannot touch the real repo
+        # before approval.
+        _send_threadsafe(
+            loop=loop,
+            queue=queue,
+            event=CodingAgentServerEvent(
+                type="node.completed",
+                run_id=run_id,
+                thread_id=thread_id,
+                node="runtime.preparing",
+                payload={
+                    "allow_write": request.allow_write,
+                    "memory_enabled": cfg.memory_enabled,
+                },
+            ),
+        )
+
+        _send_threadsafe(
+            loop=loop,
+            queue=queue,
+            event=CodingAgentServerEvent(
+                type="node.completed",
+                run_id=run_id,
+                thread_id=thread_id,
+                node="runtime.ready",
+                payload={
+                    "repo_root": repo_root,
+                    "workspace_root": workspace_root,
+                    "sandbox_enabled": True,
+                    "memory_enabled": cfg.memory_enabled,
+                },
+            ),
+        )
 
         try:
             attached_files, attachment_errors = _normalize_attached_files(
@@ -979,10 +1016,34 @@ def _stream_coding_agent_worker(
             }
         }
 
+        _send_threadsafe(
+            loop=loop,
+            queue=queue,
+            event=CodingAgentServerEvent(
+                type="node.completed",
+                run_id=run_id,
+                thread_id=thread_id,
+                node="runtime.graph_initializing",
+                payload={"memory_enabled": cfg.memory_enabled},
+            ),
+        )
+
         with coding_agent_persistence(cfg, setup=request.setup_memory) as persistence:
             graph = build_coding_agent_graph(
                 checkpointer=persistence.checkpointer,
                 store=persistence.store,
+            )
+
+            _send_threadsafe(
+                loop=loop,
+                queue=queue,
+                event=CodingAgentServerEvent(
+                    type="node.completed",
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    node="runtime.graph_ready",
+                    payload={"memory_enabled": cfg.memory_enabled},
+                ),
             )
 
             for update in graph.stream(
@@ -1060,6 +1121,9 @@ def _stream_coding_agent_worker(
                 ),
             )
 
+            if sandbox is None:
+                raise RuntimeError("Writable approval was requested without an active sandbox.")
+
             return PendingCodingAgentRun(
                 run_id=run_id,
                 thread_id=thread_id,
@@ -1068,7 +1132,8 @@ def _stream_coding_agent_worker(
                 changed_paths=changed_paths,
             )
 
-        cleanup_coding_sandbox(sandbox, keep=False)
+        if sandbox is not None:
+            cleanup_coding_sandbox(sandbox, keep=False)
         return None
 
     except Exception as exc:
