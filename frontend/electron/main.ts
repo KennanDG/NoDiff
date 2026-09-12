@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,120 @@ type SidecarLaunch = {
 let backendSidecar: ChildProcessWithoutNullStreams | null = null;
 let backendShutdownPromise: Promise<void> | null = null;
 let quitAfterBackendStops = false;
+
+const SIDECAR_DIAGNOSTIC_TAIL_LENGTH = 12_000;
+const SIDECAR_DIALOG_OUTPUT_LENGTH = 4_000;
+
+let activeSidecarLaunch: SidecarLaunch | null = null;
+let backendStdoutTail = "";
+let backendStderrTail = "";
+let backendSpawnError: Error | null = null;
+let backendExitCode: number | null = null;
+let backendExitSignal: NodeJS.Signals | null = null;
+let backendClosePromise: Promise<void> | null = null;
+
+function appendDiagnosticTail(current: string, chunk: Buffer | string) {
+  const next = current + chunk.toString();
+  return next.length > SIDECAR_DIAGNOSTIC_TAIL_LENGTH
+    ? next.slice(-SIDECAR_DIAGNOSTIC_TAIL_LENGTH)
+    : next;
+}
+
+function redactRuntimeSecrets(value: string) {
+  const apiKey = process.env.AGENT_RUNTIME_API_KEY;
+  return apiKey ? value.replaceAll(apiKey, "<redacted>") : value;
+}
+
+function writeSidecarDiagnosticLog(startupError: unknown): string | null {
+  try {
+    const logDirectory = path.join(runtimeDataDirectory, "logs");
+    mkdirSync(logDirectory, { recursive: true });
+
+    const logPath = path.join(logDirectory, "sidecar-startup.log");
+    const launch = activeSidecarLaunch;
+    const errorText =
+      startupError instanceof Error
+        ? `${startupError.name}: ${startupError.message}\n${startupError.stack ?? ""}`
+        : String(startupError);
+
+    const content = [
+      `Timestamp: ${new Date().toISOString()}`,
+      `NoDiff version: ${app.getVersion()}`,
+      `Packaged: ${String(app.isPackaged)}`,
+      `Platform: ${process.platform} ${process.arch}`,
+      `Resources path: ${process.resourcesPath}`,
+      `Runtime data directory: ${runtimeDataDirectory}`,
+      `Runtime URL: ${process.env.AGENT_RUNTIME_API_BASE_URL ?? "(not configured)"}`,
+      `Command: ${launch?.command ?? "(not resolved)"}`,
+      `Arguments: ${launch?.args.join(" ") || "(none)"}`,
+      `Working directory: ${launch?.cwd ?? "(not resolved)"}`,
+      `Exit code: ${backendExitCode ?? backendSidecar?.exitCode ?? "(none)"}`,
+      `Exit signal: ${backendExitSignal ?? backendSidecar?.signalCode ?? "(none)"}`,
+      `Spawn error: ${backendSpawnError?.message ?? "(none)"}`,
+      "",
+      "--- Startup error ---",
+      errorText,
+      "",
+      "--- stderr (tail) ---",
+      backendStderrTail.trim() || "(no stderr captured)",
+      "",
+      "--- stdout (tail) ---",
+      backendStdoutTail.trim() || "(no stdout captured)",
+      "",
+    ].join("\n");
+
+    writeFileSync(logPath, redactRuntimeSecrets(content), "utf8");
+    return logPath;
+  } catch (error) {
+    console.error("Unable to write FastAPI sidecar diagnostic log", error);
+    return null;
+  }
+}
+
+function formatSidecarStartupFailure(
+  startupError: unknown,
+  diagnosticLogPath: string | null,
+) {
+  const launch = activeSidecarLaunch;
+  const startupMessage =
+    startupError instanceof Error ? startupError.message : String(startupError);
+
+  const output = (backendStderrTail.trim() || backendStdoutTail.trim()).slice(
+    -SIDECAR_DIALOG_OUTPUT_LENGTH,
+  );
+
+  const details = [
+    `Startup error: ${startupMessage}`,
+    "",
+    "Process diagnostics:",
+    `Executable: ${launch?.command ?? "(not resolved)"}`,
+    `Working directory: ${launch?.cwd ?? "(not resolved)"}`,
+    `Exit code: ${backendExitCode ?? backendSidecar?.exitCode ?? "(none)"}`,
+    `Exit signal: ${backendExitSignal ?? backendSidecar?.signalCode ?? "(none)"}`,
+    ...(backendSpawnError ? [`Spawn error: ${backendSpawnError.message}`] : []),
+    "",
+    "Runtime diagnostics:",
+    `API URL: ${process.env.AGENT_RUNTIME_API_BASE_URL ?? "(not configured)"}`,
+    `Data directory: ${runtimeDataDirectory}`,
+    `Checkpoint DB: ${process.env.CODING_AGENT_MEMORY_CHECKPOINT_DB ?? "(not configured)"}`,
+    `Store DB: ${process.env.CODING_AGENT_MEMORY_STORE_DB ?? "(not configured)"}`,
+    ...(output
+      ? [
+          "",
+          "Last FastAPI/PyInstaller output:",
+          redactRuntimeSecrets(output),
+        ]
+      : [
+          "",
+          "No stdout/stderr was captured from the sidecar before it exited.",
+        ]),
+    ...(diagnosticLogPath
+      ? ["", `Startup diagnostic log: ${diagnosticLogPath}`]
+      : []),
+  ];
+
+  return details.join("\n");
+}
 
 function configureRuntimeDataPaths() {
   mkdirSync(memoryDirectory, { recursive: true });
@@ -185,7 +299,11 @@ function resolveSidecarLaunch(): SidecarLaunch {
 }
 
 function backendIsRunning() {
-  return backendSidecar !== null && backendSidecar.exitCode === null;
+  return (
+    backendSidecar !== null &&
+    backendSidecar.exitCode === null &&
+    backendSpawnError === null
+  );
 }
 
 async function waitForBackendReady(timeoutMs = 45_000) {
@@ -225,6 +343,13 @@ async function startBackendSidecar() {
   if (backendIsRunning()) return;
 
   const launch = resolveSidecarLaunch();
+  activeSidecarLaunch = launch;
+  backendStdoutTail = "";
+  backendStderrTail = "";
+  backendSpawnError = null;
+  backendExitCode = null;
+  backendExitSignal = null;
+
   backendSidecar = spawn(launch.command, launch.args, {
     cwd: launch.cwd,
     env: { ...process.env, PYTHONUNBUFFERED: "1" },
@@ -232,25 +357,47 @@ async function startBackendSidecar() {
     windowsHide: true,
   });
 
-  backendSidecar.stdout.on("data", (chunk: Buffer) => {
-    console.log(`[FastAPI] ${chunk.toString().trimEnd()}`);
-  });
-  backendSidecar.stderr.on("data", (chunk: Buffer) => {
-    console.error(`[FastAPI] ${chunk.toString().trimEnd()}`);
-  });
-  backendSidecar.once("error", (error) => {
-    console.error("FastAPI sidecar process error", error);
-  });
-  backendSidecar.once("exit", (code, signal) => {
-    console.log(`FastAPI sidecar exited (code=${String(code)}, signal=${String(signal)}).`);
+  const child = backendSidecar;
+  backendClosePromise = new Promise<void>((resolve) => {
+    child.once("close", () => resolve());
   });
 
-  await waitForBackendReady();
+  child.stdout.on("data", (chunk: Buffer) => {
+    backendStdoutTail = appendDiagnosticTail(backendStdoutTail, chunk);
+    console.log(`[FastAPI] ${chunk.toString().trimEnd()}`);
+  });
+
+  child.stderr.on("data", (chunk: Buffer) => {
+    backendStderrTail = appendDiagnosticTail(backendStderrTail, chunk);
+    console.error(`[FastAPI] ${chunk.toString().trimEnd()}`);
+  });
+
+  const spawnFailure = new Promise<never>((_resolve, reject) => {
+    child.once("error", (error) => {
+      backendSpawnError = error;
+      console.error("FastAPI sidecar process error", error);
+      reject(
+        new Error(
+          `Unable to launch the FastAPI sidecar process: ${error.message}`,
+        ),
+      );
+    });
+  });
+
+  child.once("exit", (code, signal) => {
+    backendExitCode = code;
+    backendExitSignal = signal;
+    console.log(
+      `FastAPI sidecar exited (code=${String(code)}, signal=${String(signal)}).`,
+    );
+  });
+
+  await Promise.race([waitForBackendReady(), spawnFailure]);
 }
 
 async function stopBackendSidecar() {
   const child = backendSidecar;
-  if (!child || child.exitCode !== null) {
+  if (!child || child.exitCode !== null || backendSpawnError !== null) {
     backendSidecar = null;
     return;
   }
@@ -447,12 +594,31 @@ app.whenReady().then(async () => {
     await startBackendSidecar();
     createWindow();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     console.error("Unable to initialize NoDiff", error);
-    dialog.showErrorBox(
-      "NoDiff could not start",
-      `The local FastAPI runtime failed to initialize.\n\n${message}`,
-    );
+
+    // "exit" can fire just before the child stdio streams finish closing.
+    // Give PyInstaller/Python a brief chance to flush the final traceback so
+    // the dialog contains the useful exception instead of only "exit code 1".
+    if (backendClosePromise) {
+      await Promise.race([
+        backendClosePromise,
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+    }
+
+    const diagnosticLogPath = writeSidecarDiagnosticLog(error);
+    const detail = formatSidecarStartupFailure(error, diagnosticLogPath);
+
+    dialog.showMessageBoxSync({
+      type: "error",
+      title: "NoDiff could not start",
+      message: "The local FastAPI runtime failed to initialize.",
+      detail,
+      buttons: ["OK"],
+      defaultId: 0,
+      noLink: true,
+    });
+
     await stopBackendSidecar();
     quitAfterBackendStops = true;
     app.quit();

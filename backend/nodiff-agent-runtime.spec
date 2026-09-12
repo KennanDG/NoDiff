@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_submodules,
+    copy_metadata,
+    get_package_paths,
+)
 
 
 PROJECT_ROOT = Path(SPECPATH)
@@ -27,6 +32,10 @@ COLLECT_PACKAGES = [
     "langchain_openai",
     "langgraph",
     "langgraph.checkpoint.sqlite",
+
+    # Required by LangGraph SqliteStore semantic/vector indexing.
+    "sqlite_vec",
+
     "onnxruntime",
     "openai",
     "openrouter",
@@ -52,6 +61,32 @@ for package in COLLECT_PACKAGES:
         # optional namespace.
         print(f"[PyInstaller] optional collection skipped for {package}: {exc}")
 
+
+# sqlite-vec is not a Python extension module. It ships a SQLite loadable
+# extension (vec0.dll) which LangGraph loads dynamically at runtime.
+#
+# PyInstaller cannot reliably discover that dynamic DLL load, so guarantee that
+# the DLL is copied beside the frozen sqlite_vec package.
+_, sqlite_vec_package_dir = get_package_paths("sqlite_vec")
+
+sqlite_vec_dll = Path(sqlite_vec_package_dir) / "vec0.dll"
+
+if not sqlite_vec_dll.is_file():
+    raise RuntimeError(
+        "sqlite-vec is installed, but vec0.dll could not be found at "
+        f"{sqlite_vec_dll}. Reinstall sqlite-vec before building."
+    )
+
+binaries.append(
+    (
+        str(sqlite_vec_dll),
+        "sqlite_vec",
+    )
+)
+
+print(f"[PyInstaller] sqlite-vec DLL: {sqlite_vec_dll}")
+
+
 for distribution in [
     "fastapi",
     "uvicorn",
@@ -59,6 +94,7 @@ for distribution in [
     "onnxruntime",
     "langchain",
     "langgraph-checkpoint-sqlite",
+    "sqlite-vec",
 ]:
     try:
         datas.extend(copy_metadata(distribution))
@@ -89,10 +125,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    # Keep the console-enabled bootloader so stdin remains available for the
-    # Electron -> FastAPI graceful shutdown pipe. Electron launches it with
-    # windowsHide=true, so users do not see a console window.
+    upx=False,
     console=True,
 )
 
@@ -101,7 +134,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="nodiff-agent-runtime",
 )
