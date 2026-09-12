@@ -10,7 +10,10 @@
     "typecheck": "tsc -b --pretty false",
     "preview": "vite preview",
     "desktop:dev": "vite",
-    "desktop:build": "npm run build && electron-builder"
+    "backend:build:windows": "cd ../backend && uv run pyinstaller --noconfirm --clean nodiff-agent-runtime.spec",
+    "desktop:build": "npm run desktop:build:windows",
+    "desktop:build:windows": "npm run backend:build:windows && npm run build && electron-builder --win nsis --x64",
+    "desktop:build:store": "npm run backend:build:windows && npm run build && electron-builder --config electron-builder.store.cjs --win msix --x64"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -37,24 +40,35 @@
     "vite-plugin-electron": "^0.29.0"
   },
   "build": {
-    "appId": "com.kennangauthier.codingagent",
-    "productName": "Coding Agent",
+    "appId": "com.kennangauthier.nodiff",
+    "productName": "NoDiff",
     "files": [
       "dist/**",
       "dist-electron/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/nodiff-agent-runtime",
+        "to": "backend/nodiff-agent-runtime"
+      }
+    ],
     "directories": {
-      "output": "release"
-    },
-    "mac": {
-      "target": "dmg"
+      "output": "release",
+      "buildResources": "build"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.svg",
+      "executableName": "NoDiff"
     },
-    "linux": {
-      "target": "AppImage"
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NoDiff",
+      "artifactName": "NoDiff-${version}-${arch}-Setup.${ext}"
     }
   }
 }
