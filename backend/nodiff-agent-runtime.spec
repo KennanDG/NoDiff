@@ -90,8 +90,10 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
-    disable_windowed_traceback=False,
+    # Keep the console-enabled bootloader so stdin remains available for the
+    # Electron -> FastAPI graceful shutdown pipe. Electron launches it with
+    # windowsHide=true, so users do not see a console window.
+    console=True,
 )
 
 coll = COLLECT(
