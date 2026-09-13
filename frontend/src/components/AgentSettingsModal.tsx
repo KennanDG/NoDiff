@@ -493,6 +493,104 @@ export const AgentSettingsModal = ({
               </section>
 
               <section className="rounded-lg border border-line bg-panel p-4">
+                <div className="flex items-start gap-2">
+                  <KeyRound size={14} className="mt-0.5 shrink-0 text-accent-light" />
+                  <div>
+                    <h3 className="text-xs font-semibold text-ink">Provider secrets</h3>
+                    <p className="mt-1 text-[10px] leading-4 text-muted">
+                      Live model discovery is account-aware when a key is configured. Without one,
+                      the API returns a safe Default catalog. Secret values are never returned to
+                      the renderer and remain session-only unless you configure environment variables
+                      or Secrets Manager.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 rounded-md border border-line bg-surface/40 p-3">
+                  <label className="text-[10px] font-medium text-muted">
+                    GitHub token
+                    <span
+                      className={`ml-2 text-[9px] ${
+                        configuration.github_token_configured ? "text-emerald-300" : "text-faint"
+                      }`}
+                    >
+                      {configuration.github_token_configured ? "configured" : "not configured"}
+                    </span>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={githubToken}
+                      onChange={(event) => setGitHubToken(event.target.value)}
+                      placeholder="Leave blank to keep current token"
+                      className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none focus:border-accent/70"
+                    />
+                  </label>
+                  <p className="mt-1 text-[9px] leading-4 text-faint">
+                    Used by repository import, status, push, and pull-request operations. The token
+                    is never returned to the renderer and a value entered here is session-only.
+                  </p>
+                </div>
+
+                <div className="mt-3 rounded-md border border-line bg-surface/40 p-3">
+                  <label className="text-[10px] font-medium text-muted">
+                    SerpApi API key
+                    <span
+                      className={`ml-2 text-[9px] ${
+                        configuration.serpapi_key_configured
+                          ? "text-emerald-300"
+                          : "text-faint"
+                      }`}
+                    >
+                      {configuration.serpapi_key_configured
+                        ? "configured"
+                        : "not configured"}
+                    </span>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={serpApiKey}
+                      onChange={(event) => setSerpApiKey(event.target.value)}
+                      placeholder="Leave blank to keep current key"
+                      className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none focus:border-accent/70"
+                    />
+                  </label>
+                  <p className="mt-1 text-[9px] leading-4 text-faint">
+                    Used by the built-in web_search tool. The key is never returned to
+                    the renderer and, like the other modal-entered credentials, is
+                    session-only.
+                  </p>
+                </div>
+
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {PROVIDERS.map((provider) => (
+                    <label key={provider} className="text-[10px] font-medium text-muted">
+                      {providerLabel[provider]} API key
+                      <span
+                        className={`ml-2 text-[9px] ${
+                          configuration.secrets_configured[provider]
+                            ? "text-emerald-300"
+                            : "text-faint"
+                        }`}
+                      >
+                        {configuration.secrets_configured[provider]
+                          ? "configured"
+                          : "not configured"}
+                      </span>
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        value={secrets[provider]}
+                        onChange={(event) =>
+                          setSecrets((current) => ({ ...current, [provider]: event.target.value }))
+                        }
+                        placeholder="Leave blank to keep current value"
+                        className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none focus:border-accent/70"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-line bg-panel p-4">
                 <h3 className="text-xs font-semibold text-ink">Coding agent models</h3>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <ProviderSelect
@@ -835,7 +933,7 @@ export const AgentSettingsModal = ({
                 </div>
               </section>
 
-              <section className="rounded-lg border border-line bg-panel p-4">
+              {/* <section className="rounded-lg border border-line bg-panel p-4">
                 <div className="flex items-start gap-2">
                   <KeyRound size={14} className="mt-0.5 shrink-0 text-accent-light" />
                   <div>
@@ -931,7 +1029,7 @@ export const AgentSettingsModal = ({
                     </label>
                   ))}
                 </div>
-              </section>
+              </section> */}
 
               {message ? (
                 <div className="rounded-md border border-emerald-500/20 bg-emerald-500/8 p-3 text-[11px] text-emerald-300">
