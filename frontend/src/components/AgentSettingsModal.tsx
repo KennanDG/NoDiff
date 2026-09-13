@@ -241,6 +241,7 @@ export const AgentSettingsModal = ({
   const [configuration, setConfiguration] = useState<AgentConfiguration | null>(null);
   const [secrets, setSecrets] = useState(emptySecrets);
   const [githubToken, setGitHubToken] = useState("");
+  const [serpApiKey, setSerpApiKey] = useState("");
   const [catalogs, setCatalogs] = useState<Record<string, ModelCatalogResponse>>({});
   const [catalogLoading, setCatalogLoading] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -293,6 +294,7 @@ export const AgentSettingsModal = ({
     setError(null);
     setMessage(null);
     setGitHubToken("");
+    setSerpApiKey("");
 
     fetchAgentConfiguration({ apiBaseUrl, apiKey })
       .then(async (result) => {
@@ -428,15 +430,17 @@ export const AgentSettingsModal = ({
           reasoning_model_max_output_tokens: configuration.reasoning_model_max_output_tokens,
           secrets: changedSecrets,
           github_token: githubToken.trim() || undefined,
+          serpapi_api_key: serpApiKey.trim() || undefined,
         },
       });
       setConfiguration(updated);
       onSaved?.(updated);
       setSecrets(emptySecrets());
       setGitHubToken("");
+      setSerpApiKey("");
       setCatalogs({});
       await loadConfigurationCatalogs(updated);
-      setMessage("Saved. New coding, vision, and voice runs will use this configuration.");
+      setMessage("Saved. New coding, vision, voice, and web-search runs will use this configuration.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Failed to save agent configuration.");
     } finally {
@@ -868,6 +872,37 @@ export const AgentSettingsModal = ({
                     is never returned to the renderer and a value entered here is session-only.
                   </p>
                 </div>
+
+                <div className="mt-3 rounded-md border border-line bg-surface/40 p-3">
+                  <label className="text-[10px] font-medium text-muted">
+                    SerpApi API key
+                    <span
+                      className={`ml-2 text-[9px] ${
+                        configuration.serpapi_key_configured
+                          ? "text-emerald-300"
+                          : "text-faint"
+                      }`}
+                    >
+                      {configuration.serpapi_key_configured
+                        ? "configured"
+                        : "not configured"}
+                    </span>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={serpApiKey}
+                      onChange={(event) => setSerpApiKey(event.target.value)}
+                      placeholder="Leave blank to keep current key"
+                      className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink outline-none focus:border-accent/70"
+                    />
+                  </label>
+                  <p className="mt-1 text-[9px] leading-4 text-faint">
+                    Used by the built-in web_search tool. The key is never returned to
+                    the renderer and, like the other modal-entered credentials, is
+                    session-only.
+                  </p>
+                </div>
+
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   {PROVIDERS.map((provider) => (
                     <label key={provider} className="text-[10px] font-medium text-muted">

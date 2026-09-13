@@ -556,6 +556,7 @@ class AgentConfigurationUpdate(BaseModel):
 
     secrets: dict[ChatProvider, str] = Field(default_factory=dict)
     github_token: str | None = Field(default=None, max_length=4_096)
+    serpapi_api_key: str | None = Field(default=None, max_length=4_096)
 
     @field_validator(
         "coding_model",
@@ -566,6 +567,7 @@ class AgentConfigurationUpdate(BaseModel):
         "voice_tts_model",
         "voice_tts_voice",
         "github_token",
+        "serpapi_api_key",
     )
     @classmethod
     def normalize_text(cls, value: str | None) -> str | None:

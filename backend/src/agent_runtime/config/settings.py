@@ -189,6 +189,11 @@ class Settings(BaseSettings):
 
         return None
 
+
+    def resolved_serpapi_api_key(self) -> str | None:
+        """Return the SerpApi key used by the built-in web_search tool."""
+        return self.serpapi_api_key
+
     model_config = SettingsConfigDict(
         env_file=RUNTIME_ENV_FILE,
         env_file_encoding="utf-8",
@@ -220,6 +225,10 @@ class Settings(BaseSettings):
     # GitHub repository integration
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     github_secret_arn: str | None = Field(default=None, alias="GITHUB_SECRET_ARN")
+
+    # Built-in web search integration. Packaged builds can populate this at
+    # runtime through Agent Settings instead of requiring a .env file.
+    serpapi_api_key: str | None = Field(default=None, alias="SERPAPI_API_KEY")
     github_token_kind: Literal["user", "installation"] = Field(
         default="user",
         alias="GITHUB_TOKEN_KIND",

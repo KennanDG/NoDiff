@@ -9,7 +9,6 @@ import urllib.request
 
 load_dotenv()
 
-SERPAPI_API_KEY=os.environ['SERPAPI_API_KEY']
 
 def web_search(query: str, num_results: int = 5) -> str:
     """Perform a web search using the SerpApi service.
@@ -23,10 +22,23 @@ def web_search(query: str, num_results: int = 5) -> str:
     Returns:
         A JSON string containing an array of result objects (title, link, snippet).
     """
-    api_key = os.environ.get("SERPAPI_API_KEY")
+    # Resolve the credential lazily. A missing key must not crash the entire
+    # FastAPI sidecar during module import, because users configure it from the UI.
+    from agent_runtime.config.settings import settings as config_settings
+
+    api_key = config_settings.resolved_serpapi_api_key() or os.environ.get(
+        "SERPAPI_API_KEY"
+    )
 
     if not api_key:
-        return json.dumps({"error": "SERPAPI_API_KEY not set"})
+        return json.dumps(
+            {
+                "error": (
+                    "SerpApi is not configured. Add a SerpApi API key in "
+                    "Agent configuration > Provider secrets."
+                )
+            }
+        )
 
     params = {
         "q": query,
