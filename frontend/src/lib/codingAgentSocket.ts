@@ -250,6 +250,19 @@ export type CodingAgentServerEvent =
       };
     })
   | (CodingAgentServerEventEnvelope & {
+      type: "run.progress";
+      run_id: string;
+      thread_id: string;
+      payload: {
+        phase: string;
+        message: string;
+        command?: string;
+        timeout_seconds?: number;
+        returncode?: number;
+        elapsed_seconds?: number;
+      };
+    })
+  | (CodingAgentServerEventEnvelope & {
       type: "node.completed";
       run_id: string;
       thread_id: string;
@@ -309,8 +322,9 @@ type CodingAgentSocketOptions = {
   apiKey: string;
   onEvent: (event: CodingAgentServerEvent) => void;
   onOpen?: () => void;
-  onClose?: () => void;
+  onClose?: (event: CloseEvent) => void;
   onError?: (event: Event) => void;
+  onProtocolError?: (error: Error) => void;
 };
 
 const makeSocketUrl = (apiBaseUrl: string, apiKey?: string) => {
@@ -354,21 +368,61 @@ export const createCodingAgentSocket = (options: CodingAgentSocketOptions) => {
   });
 
   socket.addEventListener("message", (message) => {
+    if (manuallyClosed) return;
+    let event: CodingAgentServerEvent;
     try {
-      const event = JSON.parse(message.data) as CodingAgentServerEvent;
+      const parsed: unknown = JSON.parse(message.data);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Expected a coding-agent event object.");
+      }
+      const envelope = parsed as Record<string, unknown>;
+      if (typeof envelope.type !== "string" || !envelope.payload ||
+          typeof envelope.payload !== "object" || Array.isArray(envelope.payload)) {
+        throw new Error("Coding-agent event is missing its type or payload.");
+      }
+      const payload = envelope.payload as Record<string, unknown>;
+      if (envelope.type === "run.completed") {
+        if (typeof payload.thread_id !== "string" || typeof payload.status !== "string" ||
+            !["not_required", "pending", "applied", "rejected"].includes(String(payload.approval_status))) {
+          throw new Error("Completion event is missing its result status or thread.");
+        }
+        for (const field of ["plan", "files_inspected", "diffs", "validation_commands", "applied_files", "errors"]) {
+          const value = payload[field];
+          if (value != null && (!Array.isArray(value) || value.some(item => typeof item !== "string"))) {
+            throw new Error(`Completion event has an invalid ${field} field.`);
+          }
+        }
+        for (const field of ["file_changes", "validation_results"]) {
+          const value = payload[field];
+          if (value != null && (!Array.isArray(value) || value.some(item => !item || typeof item !== "object" || Array.isArray(item)))) {
+            throw new Error(`Completion event has an invalid ${field} field.`);
+          }
+        }
+      }
+      if (envelope.type === "run.failed" && typeof payload.error !== "string") {
+        throw new Error("Failure event is missing its error message.");
+      }
+      event = parsed as CodingAgentServerEvent;
+    } catch (error) {
+      options.onProtocolError?.(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    try {
       options.onEvent(event);
     } catch (error) {
-      console.error("Failed to parse coding agent WebSocket event.", error);
+      options.onProtocolError?.(new Error(
+        `Failed to handle ${event.type}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     pendingMessages.length = 0;
-    if (!manuallyClosed) options.onClose?.();
+    if (!manuallyClosed) options.onClose?.(event);
   });
 
   socket.addEventListener("error", (event) => {
-    options.onError?.(event);
+    if (!manuallyClosed) options.onError?.(event);
   });
 
   return {

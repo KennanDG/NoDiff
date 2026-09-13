@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
@@ -722,7 +723,11 @@ def _queue_put_threadsafe(
     # handoff deterministic even while the app is beginning shutdown.
     if loop.is_closed():
         return
-    loop.call_soon_threadsafe(queue.put_nowait, item)
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, item)
+    except RuntimeError:
+        if not loop.is_closed():
+            raise
 
 
 def _send_threadsafe(
@@ -738,13 +743,44 @@ def _send_threadsafe(
     )
 
 
+class _NodeProgressCallback(BaseCallbackHandler):
+    """Local node-start notifications; no LangSmith client or trace flushing."""
+
+    run_inline = True
+
+    def __init__(self, *, loop, queue, run_id: str, thread_id: str) -> None:
+        self.loop = loop
+        self.queue = queue
+        self.run_id = run_id
+        self.thread_id = thread_id
+
+    def on_chain_start(self, serialized, inputs, *, metadata=None, **kwargs) -> None:
+        node = (metadata or {}).get("langgraph_node")
+        # Nested chains inherit metadata; only announce the node itself.
+        if not node or kwargs.get("name") != node:
+            return
+        messages = {
+            "validate": "Validating the proposed changes…",
+            "report": "Preparing the final response…",
+            "remember_run": "Saving run memory…",
+        }
+        _send_threadsafe(
+            loop=self.loop, queue=self.queue,
+            event=CodingAgentServerEvent(
+                type="run.progress", run_id=self.run_id,
+                thread_id=self.thread_id, node=str(node),
+                payload={"phase": str(node), "message": messages.get(node, f"Running {node}…")},
+            ),
+        )
+
+
 def _stream_coding_agent_worker(
     *,
     request: CodingAgentRunRequest,
     run_id: str,
     loop: asyncio.AbstractEventLoop,
     queue: asyncio.Queue[dict[str, Any] | None],
-) -> None:
+) -> PendingCodingAgentRun | None:
     
     thread_id = request.thread_id or _new_thread_id()
     sandbox: CodingSandbox | None = None
@@ -1011,6 +1047,9 @@ def _stream_coding_agent_worker(
         )
 
         config: RunnableConfig = {
+            "callbacks": [_NodeProgressCallback(
+                loop=loop, queue=queue, run_id=run_id, thread_id=thread_id,
+            )],
             "configurable": {
                 "thread_id": thread_id,
             }
@@ -1048,19 +1087,44 @@ def _stream_coding_agent_worker(
 
             # LangSmith tracing is intentionally disabled at process startup while
             # diagnosing the Electron/sidecar stall. Run the graph directly so no
-            # LangSmith client, callback, trace scope, or trace flush participates in
-            # the coding-agent request lifecycle.
+            # LangSmith client, trace scope, or trace flush participates in the
+            # lifecycle. The callback above only sends local progress events.
             logger.info(
                 "Coding run %s entering LangGraph stream with LangSmith tracing disabled",
                 run_id,
             )
-            for update in graph.stream(
+            for mode, update in graph.stream(
                 initial_state,
                 config=config,
                 context=runtime_context,
-                stream_mode="updates",
+                stream_mode=["updates", "values", "custom"],
             ):
                 if not isinstance(update, dict):
+                    continue
+
+                if mode == "values":
+                    # Use LangGraph's reduced state. dict.update(node_delta)
+                    # alone loses accumulated results from parallel workers.
+                    final_state = dict(update)
+                    continue
+
+                if mode == "custom":
+                    kind = update.get("type")
+                    if kind not in {"validation.command.started", "validation.command.completed"}:
+                        continue
+                    command = str(update.get("command", ""))
+                    message = (
+                        f"Validating: {command} (timeout {update.get('timeout_seconds')}s)"
+                        if kind == "validation.command.started"
+                        else f"Validation finished: {command} (exit {update.get('returncode')})"
+                    )
+                    _send_threadsafe(
+                        loop=loop, queue=queue,
+                        event=CodingAgentServerEvent(
+                            type="run.progress", run_id=run_id, thread_id=thread_id,
+                            node="validate", payload={**update, "phase": "validate", "message": message},
+                        ),
+                    )
                     continue
 
                 for node_name, node_delta in update.items():
@@ -1082,6 +1146,14 @@ def _stream_coding_agent_worker(
                         ),
                     )
 
+            _send_threadsafe(
+                loop=loop, queue=queue,
+                event=CodingAgentServerEvent(
+                    type="run.progress", run_id=run_id, thread_id=thread_id,
+                    payload={"phase": "finalizing", "message": "Finalizing run persistence…"},
+                ),
+            )
+
         
         final_state["thread_id"] = thread_id
 
@@ -1096,6 +1168,10 @@ def _stream_coding_agent_worker(
         final_state["approval_required"] = approval_required
         final_state["approval_status"] = "pending" if approval_required else "not_required"
         final_state["applied_files"] = []
+
+        # This is the API lifecycle status, independent of the last graph node's
+        # status (for example "reported"). Approval remains explicit.
+        final_state["status"] = "approval_pending" if approval_required else "completed"
 
         result = _public_result(final_state, thread_id)
 
@@ -1141,17 +1217,15 @@ def _stream_coding_agent_worker(
             )
 
         if sandbox is not None:
-            cleanup_coding_sandbox(sandbox, keep=False)
+            try:
+                cleanup_coding_sandbox(sandbox, keep=False)
+            except Exception:
+                # The run is already complete; cleanup is not a second outcome.
+                logger.exception("Failed to clean completed coding run %s", run_id)
         return None
 
     except Exception as exc:
         logger.exception("Coding run %s failed", run_id)
-        if sandbox is not None:
-            try:
-                cleanup_coding_sandbox(sandbox, keep=False)
-            except Exception:
-                logger.exception("Failed to clean sandbox for coding run %s", run_id)
-
         _send_threadsafe(
             loop=loop,
             queue=queue,
@@ -1165,6 +1239,12 @@ def _stream_coding_agent_worker(
                 },
             ),
         )
+        # A slow filesystem cleanup must not hide the failure from the UI.
+        if sandbox is not None:
+            try:
+                cleanup_coding_sandbox(sandbox, keep=False)
+            except Exception:
+                logger.exception("Failed to clean sandbox for coding run %s", run_id)
         return None
 
     finally:
@@ -1181,6 +1261,7 @@ async def _run_and_forward_events(
 ) -> PendingCodingAgentRun | None:
     
     run_id = uuid4().hex
+    request = request.model_copy(update={"thread_id": request.thread_id or _new_thread_id()})
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
@@ -1194,15 +1275,91 @@ async def _run_and_forward_events(
         )
     )
 
-    while True:
-        event = await queue.get()
+    event_task = asyncio.create_task(queue.get())
+    terminal_sent = False
+    result_handed_off = False
+    last_progress = loop.time()
+    phase = "preparing"
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {event_task, worker_task}, timeout=10,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                if not terminal_sent:
+                    await websocket.send_json(CodingAgentServerEvent(
+                        type="run.progress", run_id=run_id, thread_id=request.thread_id,
+                        payload={
+                            "phase": phase,
+                            "message": f"Waiting for {phase} ({int(loop.time() - last_progress)}s since last update)…",
+                        },
+                    ).model_dump())
+                continue
 
-        if event is None:
-            break
+            if event_task.done():
+                event = event_task.result()
+                if event is None:
+                    break
+                await websocket.send_json(event)
+                last_progress = loop.time()
 
-        await websocket.send_json(event)
+                if event["type"] == "run.progress":
+                    phase = event["payload"].get("phase", phase)
 
-    return await worker_task
+                if event["type"] in {"run.completed", "run.failed"}:
+                    terminal_sent = True
+
+                event_task = asyncio.create_task(queue.get())
+                
+            elif worker_task.done():
+                # A worker can fail before reaching its finally/sentinel. Never
+                # wait forever on an empty queue after its Future has finished.
+                if queue.empty():
+                    break
+
+        result = await worker_task
+        if not terminal_sent:
+            await websocket.send_json(CodingAgentServerEvent(
+                type="run.failed", run_id=run_id, thread_id=request.thread_id,
+                payload={"error": "Coding worker exited without a completion event."},
+            ).model_dump())
+            return None
+        result_handed_off = True
+        return result
+    except (WebSocketDisconnect, OSError):
+        raise
+    except Exception as exc:
+        if not terminal_sent:
+            await websocket.send_json(CodingAgentServerEvent(
+                type="run.failed", run_id=run_id, thread_id=request.thread_id,
+                payload={"error": str(exc) or type(exc).__name__, "error_type": type(exc).__name__},
+            ).model_dump())
+        return None
+    finally:
+        event_task.cancel()
+        await asyncio.gather(event_task, return_exceptions=True)
+        if not result_handed_off:
+            # Cancelling asyncio.to_thread does not stop its Python worker. Let it
+            # finish, consume its outcome, and clean any unclaimed sandbox.
+            def discard_result(task):
+                if task.cancelled():
+                    return
+                try:
+                    pending = task.result()
+                    if pending:
+                        cleanup = loop.run_in_executor(
+                            None, lambda: cleanup_coding_sandbox(pending.sandbox, keep=False),
+                        )
+                        def cleanup_done(future):
+                            try:
+                                future.result()
+                            except Exception:
+                                logger.exception("Failed to clean abandoned coding run %s", run_id)
+                        cleanup.add_done_callback(cleanup_done)
+                except Exception:
+                    logger.exception("Failed to dispose disconnected coding run %s", run_id)
+            worker_task.add_done_callback(discard_result)
 
 
 

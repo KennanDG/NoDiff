@@ -126,6 +126,8 @@ export type AgentConfiguration = {
   secrets_persistence: "session_only";
   github_token_configured: boolean;
   github_token_persistence: "session_only";
+  serpapi_key_configured: boolean;
+  serpapi_key_persistence: "session_only";
 };
 
 export type UpdateAgentConfiguration = Omit<
@@ -135,9 +137,12 @@ export type UpdateAgentConfiguration = Omit<
   | "secrets_persistence"
   | "github_token_configured"
   | "github_token_persistence"
+  | "serpapi_key_configured"
+  | "serpapi_key_persistence"
 > & {
   secrets?: Partial<Record<ChatProvider, string>>;
   github_token?: string;
+  serpapi_api_key?: string;
 };
 
 

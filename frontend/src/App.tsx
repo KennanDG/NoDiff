@@ -69,6 +69,8 @@ const configuredWorkspaceRoot =
     : configuredWorkspaceRootRaw || configuredRepoRoot;
 
 type DivideConquerRunState = AgentRunState & {
+  phase?: string | null;
+  progressMessage?: string | null;
   selectedSkills?: string[];
   taskMode?: CodingAgentTaskMode | null;
   implementationUnits?: CodingAgentImplementationUnit[];
@@ -84,6 +86,8 @@ type DivideConquerRunState = AgentRunState & {
 
 const createRunState = (status: AgentRunState["status"] = "connecting"): DivideConquerRunState => ({
   status,
+  phase: null,
+  progressMessage: null,
   plan: [],
   completedNodes: [],
   filesInspected: [],
@@ -113,7 +117,10 @@ const createRunState = (status: AgentRunState["status"] = "connecting"): DivideC
 
 const initialRunState = createRunState();
 
-type RunAction = CodingAgentServerEvent | { type: "session.reset" };
+type RunAction = CodingAgentServerEvent
+  | { type: "session.reset" }
+  | { type: "run.queued"; threadId?: string | null }
+  | { type: "session.disconnected" | "session.error"; error: string };
 
 type GitHubCommitReceipt = {
   branch: string;
@@ -310,6 +317,10 @@ const mergeResult = (state: AgentRunState, result: CodingAgentRunResult): Divide
 
 
 const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunState => {
+  if ("run_id" in event && event.run_id && state.runId &&
+      event.type !== "run.started" && event.run_id !== state.runId) {
+    return state; // A delayed event must not replace the active run.
+  }
   switch (event.type) {
     case "session.reset":
       return createRunState("ready");
@@ -317,9 +328,32 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
     case "session.ready":
       return {
         ...state,
-        status: "ready",
+        status: state.status === "connecting" || state.status === "disconnected" ? "ready" : state.status,
         logs: [...state.logs, `[socket] ${event.payload.message}`],
       };
+
+    case "run.queued":
+      return {
+        ...createRunState("running"),
+        threadId: event.threadId,
+        progressMessage: "Waiting for the backend to start the run…",
+      };
+
+    case "session.disconnected":
+    case "session.error": {
+      const interrupted = state.status === "running" || state.status === "approval_pending";
+      const idle = ["connecting", "ready", "disconnected"].includes(state.status);
+      return {
+        ...state,
+        status: interrupted ? "failed" : idle ? "disconnected" : state.status,
+        phase: null,
+        progressMessage: null,
+        approvalRequired: false,
+        approvalStatus: state.approvalStatus === "pending" ? "not_required" : state.approvalStatus,
+        errors: state.errors.includes(event.error) ? state.errors : [...state.errors, event.error],
+        logs: [...state.logs, `[socket] ${event.error}`],
+      };
+    }
 
     case "run.started": {
       const workerCount = event.payload.subtask_worker_count ?? event.payload.subagent_count;
@@ -332,6 +366,8 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
         subtaskWorkerCount: workerCount ?? 0,
         maxImplementationIterations: maxImplementationIterations ?? 0,
         runtimeSettings: event.payload.runtime_settings ?? {},
+        phase: "preparing",
+        progressMessage: "Preparing the coding run…",
         logs: [
           `[run] started ${event.thread_id}`,
           `[repo] ${event.payload.repo_root}`,
@@ -343,6 +379,15 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
         ],
       };
     }
+
+    case "run.progress":
+      if (state.status !== "running") return state;
+      return {
+        ...state,
+        phase: event.payload.phase,
+        progressMessage: event.payload.message,
+        logs: [...state.logs, `[progress] ${event.payload.message}`],
+      };
 
     case "node.completed": {
       const payload = event.payload;
@@ -399,7 +444,12 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
     case "run.completed":
       return {
         ...mergeResult(state, event.payload),
-        status: "completed",
+        status: event.payload.approval_status === "pending" ? "approval_pending"
+          : event.payload.approval_status === "applied" ? "applied"
+          : event.payload.approval_status === "rejected" ? "rejected"
+          : event.payload.status === "failed" ? "failed" : "completed",
+        phase: null,
+        progressMessage: null,
         runId: event.run_id,
         threadId: event.thread_id,
         logs: [...state.logs, `[run] completed ${event.thread_id}`],
@@ -409,8 +459,10 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
       return {
         ...state,
         status: "failed",
-        runId: event.run_id,
-        threadId: event.thread_id,
+        phase: null,
+        progressMessage: null,
+        runId: event.run_id ?? state.runId,
+        threadId: event.thread_id ?? state.threadId,
         errors: [...state.errors, event.payload.error],
         logs: [...state.logs, `[error] ${event.payload.error}`],
       };
@@ -419,6 +471,8 @@ const runReducer = (state: AgentRunState, event: RunAction): DivideConquerRunSta
       return {
         ...state,
         status: "approval_pending",
+        phase: null,
+        progressMessage: null,
         runId: event.run_id,
         threadId: event.thread_id,
         approvalRequired: true,
@@ -492,6 +546,7 @@ const App = () => {
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [githubRepositoryStatus, setGitHubRepositoryStatus] = useState<GitHubRepositoryStatus | null>(null);
   const [githubActionLoading, setGitHubActionLoading] = useState<string | null>(null);
+  
   // Repository source changes can overlap when the user abandons a slow GitHub
   // import and switches back to a local folder. Only the newest selection is
   // allowed to commit renderer state.
@@ -527,6 +582,31 @@ const App = () => {
   const socketRef = useRef<ReturnType<typeof createCodingAgentSocket> | null>(null);
   const newThreadForNextRunRef = useRef(false);
   const activeRunMessageIdRef = useRef<string | null>(null);
+
+  // All lifecycle events update both the current session and its PlanCard.
+  // Transport errors previously changed only the session and left the card running.
+  const handleRunAction = useCallback((event: RunAction) => {
+    dispatchRun(event);
+    const activeMessageId = activeRunMessageIdRef.current;
+    if (activeMessageId) {
+      setMessages((current) => current.map((message) =>
+        message.id === activeMessageId && message.run
+          ? { ...message, run: runReducer(message.run, event) }
+          : message,
+      ));
+    }
+    if (event.type === "run.started") newThreadForNextRunRef.current = false;
+    const response = event.type === "run.completed"
+      ? event.payload.markdown_response ?? event.payload.report
+      : event.type === "run.failed" ? event.payload.error
+      : event.type === "session.disconnected" || event.type === "session.error" ? event.error
+      : null;
+    if (response) {
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(), role: "agent", body: response, time: nowLabel(),
+      }]);
+    }
+  }, []);
 
   const resetAgentWorkspace = useCallback(() => {
     dispatchRun({ type: "session.reset" });
@@ -1089,55 +1169,22 @@ const App = () => {
     const client = createCodingAgentSocket({
       apiBaseUrl,
       apiKey,
-      onEvent: (event) => {
-        dispatchRun(event);
-
-        const activeRunMessageId = activeRunMessageIdRef.current;
-        if (activeRunMessageId) {
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === activeRunMessageId && message.run
-                ? { ...message, run: runReducer(message.run, event) }
-                : message,
-            ),
-          );
-        }
-
-        if (event.type === "run.started") {
-          newThreadForNextRunRef.current = false;
-        }
-
-        if (event.type === "run.completed") {
-          const response = event.payload.markdown_response ?? event.payload.report;
-          if (response) {
-            setMessages((current) => [
-              ...current,
-              { id: crypto.randomUUID(), role: "agent", body: response, time: nowLabel() },
-            ]);
-          }
-        }
-
-        if (event.type === "run.failed") {
-          setMessages((current) => [
-            ...current,
-            { id: crypto.randomUUID(), role: "agent", body: event.payload.error, time: nowLabel() },
-          ]);
-        }
-      },
+      onEvent: handleRunAction,
       onOpen: () => {
         console.log("Coding agent socket connected.");
       },
-      onClose: () => {
-        dispatchRun({
-          type: "run.failed",
-          run_id: null,
-          thread_id: null,
-          node: null,
-          payload: { error: "Coding agent socket closed." },
+      onClose: (event) => {
+        handleRunAction({
+          type: "session.disconnected",
+          error: `Coding agent socket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ""}). Reopen the app to reconnect.`,
         });
       },
       onError: (event) => {
         console.error("Coding agent socket error.", event);
+        handleRunAction({ type: "session.error", error: "Coding agent connection failed. Check that the backend is running." });
+      },
+      onProtocolError: (error) => {
+        handleRunAction({ type: "session.error", error: `Coding agent event error: ${error.message}` });
       },
     });
 
@@ -1147,7 +1194,7 @@ const App = () => {
       client.close();
       socketRef.current = null;
     };
-  }, []);
+  }, [handleRunAction]);
 
 
 
@@ -1311,38 +1358,17 @@ const App = () => {
     };
     clearChanges();
 
-    const client = socketRef.current;
-    if (!client) {
-      const error = "Coding agent WebSocket is not connected.";
-      dispatchRun({
-        type: "run.failed",
-        run_id: null,
-        thread_id: run.threadId ?? null,
-        node: null,
-        payload: { error },
-      });
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "agent", body: error, time: nowLabel() },
-      ]);
-      return;
-    }
-
+    handleRunAction({ type: "run.queued", threadId: runRequest.thread_id });
     try {
+      const client = socketRef.current;
+      if (!client) throw new Error("Coding agent WebSocket is not connected.");
       client.run(runRequest);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Coding agent WebSocket send failed.";
-      dispatchRun({
-        type: "run.failed",
-        run_id: null,
-        thread_id: run.threadId ?? null,
-        node: null,
-        payload: { error: message },
+      handleRunAction({
+        type: "run.failed", run_id: null,
+        thread_id: run.threadId ?? null, node: null,
+        payload: { error: error instanceof Error ? error.message : "Coding agent WebSocket send failed." },
       });
-      setMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "agent", body: message, time: nowLabel() },
-      ]);
     }
   };
 

@@ -189,6 +189,14 @@ def _github_configuration_snapshot() -> dict[str, Any]:
     }
 
 
+def _serpapi_configuration_snapshot() -> dict[str, Any]:
+    """Expose only SerpApi configuration state, never the credential itself."""
+    return {
+        "serpapi_key_configured": bool(config_settings.serpapi_api_key),
+        "serpapi_key_persistence": "session_only",
+    }
+
+
 _load_coding_runtime_configuration()
 _load_local_repository_session()
 
@@ -781,6 +789,7 @@ def get_agent_configuration() -> dict[str, Any]:
         **runtime_agent_configuration.public_snapshot(),
         **_coding_runtime_snapshot(),
         **_github_configuration_snapshot(),
+        **_serpapi_configuration_snapshot(),
     }
 
 
@@ -795,7 +804,9 @@ def list_available_models(
 
 @router.put("/agent-configuration")
 def update_agent_configuration(request: AgentConfigurationUpdate) -> dict[str, Any]:
-    values = request.model_dump(exclude={"secrets", "github_token"})
+    values = request.model_dump(
+        exclude={"secrets", "github_token", "serpapi_api_key"}
+    )
     model_values = {field: values[field] for field in MODEL_CONFIGURATION_FIELDS}
     coding_values = {
         field: int(values[field])
@@ -816,6 +827,14 @@ def update_agent_configuration(request: AgentConfigurationUpdate) -> dict[str, A
         
         if github_token:
             config_settings.github_token = github_token
+
+        # SerpApi is independent of the chat-model providers. Keep it as its own
+        # backend-only credential and never return the value to the renderer.
+        serpapi_api_key = (request.serpapi_api_key or "").strip()
+        if serpapi_api_key:
+            config_settings.serpapi_api_key = serpapi_api_key
+            # Synchronize legacy os.getenv consumers in the running process.
+            os.environ["SERPAPI_API_KEY"] = serpapi_api_key
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -832,6 +851,7 @@ def update_agent_configuration(request: AgentConfigurationUpdate) -> dict[str, A
         **snapshot,
         **_coding_runtime_snapshot(),
         **_github_configuration_snapshot(),
+        **_serpapi_configuration_snapshot(),
     }
 
 

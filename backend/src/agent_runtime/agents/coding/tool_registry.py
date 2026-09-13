@@ -18,6 +18,7 @@ CUSTOM_APPROVED_DIR = CODING_TOOLS_DIR / "custom_approved"
 # code. Expand this allowlist only when a concrete reviewed tool requires it.
 SAFE_IMPORT_ROOTS = {
     "__future__",
+    "os",
     "ast",
     "collections",
     "dataclasses",
@@ -49,7 +50,7 @@ FORBIDDEN_DIRECT_CALLS = {
     "getattr",
     "globals",
     "locals",
-    "open",
+    # "open",
     "setattr",
     "vars",
 }

@@ -30,6 +30,7 @@ dependencies = [
     "fastembed>=0.8.0",
     "boto3>=1.43.83",
     "pyinstaller>=6.22.2",
+    "sqlite-vec==0.1.9",
 ]
 
 

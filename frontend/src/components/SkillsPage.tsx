@@ -604,6 +604,11 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
               </button>
             </div>
 
+            {message ? (
+              <div className="mt-3 rounded-md border border-emerald-500/20 bg-emerald-500/8 p-3 text-[11px] leading-5 text-emerald-300">
+                {message}
+              </div>
+            ) : null}
             <div className="mt-4">
               <FieldLabel>Registry name</FieldLabel>
               <input
@@ -628,11 +633,6 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
               />
             </div>
 
-            {message ? (
-              <div className="mt-3 rounded-md border border-emerald-500/20 bg-emerald-500/8 p-3 text-[11px] leading-5 text-emerald-300">
-                {message}
-              </div>
-            ) : null}
             {error ? (
               <div className="mt-3 flex items-start gap-2 rounded-md border border-rose-500/20 bg-rose-500/8 p-3 text-[11px] leading-5 text-rose-300">
                 <CircleAlert size={14} className="mt-0.5 shrink-0" />
