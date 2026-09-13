@@ -271,6 +271,7 @@ class CodingAgentServerEvent(BaseModel):
     type: Literal[
         "session.ready",
         "run.started",
+        "run.progress",
         "node.completed",
         "run.completed",
         "run.failed",

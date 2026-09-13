@@ -44,6 +44,7 @@ const statusClass = {
 
 
 type DivideConquerRunView = AgentRunState & {
+  progressMessage?: string | null;
   taskMode?: CodingAgentTaskMode | null;
   implementationUnits?: CodingAgentImplementationUnit[];
   completionLedger?: CodingAgentCompletionLedger;
@@ -52,7 +53,7 @@ type DivideConquerRunView = AgentRunState & {
   subtaskWorkerCount?: number;
 };
 
-const COMPLETE_UNIT_STATUSES = new Set(["complete", "completed", "done", "success", "succeeded", "applied"]);
+const COMPLETE_UNIT_STATUSES = new Set(["implemented", "no_change_needed", "complete", "completed", "done", "success", "succeeded", "applied"]);
 const FAILED_UNIT_STATUSES = new Set(["blocked", "failed", "patch_failed"]);
 
 const implementationUnitId = (unit: CodingAgentImplementationUnit, index: number) => {
@@ -77,7 +78,7 @@ const PlanCard = ({ run }: { run: AgentRunState }) => {
     return COMPLETE_UNIT_STATUSES.has(status);
   });
   const terminalRun = run.status === "completed" || run.status === "approval_pending" || run.status === "applied";
-  const allStepsDone = terminalRun && (implementationUnits.length === 0 || allUnitsDone);
+  const allStepsDone = terminalRun && !run.blockingValidationFailed && (implementationUnits.length === 0 || allUnitsDone);
 
   return (
     <div className="rounded-lg border border-line bg-surface p-3">
@@ -92,7 +93,9 @@ const PlanCard = ({ run }: { run: AgentRunState }) => {
       {run.plan.length > 0 ? (
         <ol className="space-y-2">
           {run.plan.map((step, index) => {
-            const done = allStepsDone || run.completedNodes.length > index;
+            // Graph nodes do not correspond one-to-one to natural-language plan
+            // steps. Runtime startup events must not check off validation.
+            const done = allStepsDone;
             return (
               <li key={`${step}:${index}`} className="flex items-start gap-2 text-[11px] leading-5 text-muted">
                 {done ? (
@@ -562,8 +565,14 @@ export const TaskPanel = ({ messages, run, onSubmit, onVoiceAudio, voiceReplyUrl
         >
           <RefreshCw size={13} />
         </button>
-        <span className={`ml-auto rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase ${statusClass[run.status]}`}>{run.status}</span>
+        <span className={`ml-auto rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase ${statusClass[run.status]}`}>{run.status.replaceAll("_", " ")}</span>
       </div>
+
+      {isRunning && (run as DivideConquerRunView).progressMessage ? (
+        <p role="status" className="border-b border-line px-4 py-2 text-[10px] text-muted">
+          {(run as DivideConquerRunView).progressMessage}
+        </p>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <div className="space-y-4">

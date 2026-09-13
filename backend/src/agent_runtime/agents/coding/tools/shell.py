@@ -1,8 +1,71 @@
 from __future__ import annotations
 
+import logging
+import os
 import shlex
+import signal
 import subprocess
+import tempfile
+import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _validation_progress(event: str, **payload: object) -> None:
+    """Publish live command progress when called inside a LangGraph node."""
+    try:
+        from langgraph.config import get_stream_writer
+
+        writer = get_stream_writer()
+        writer({"type": event, **payload})
+    except Exception:
+        # Standalone calls have no graph context; observability must never stop
+        # validation or turn a passing command into an execution failure.
+        logger.debug("Validation progress stream unavailable", exc_info=True)
+
+
+def _output_tail(stream) -> str:
+    # Regular files avoid EOF waits on pipes inherited by grandchildren (uv,
+    # pytest, npm, etc.). Read a bounded snapshot even if a child is still alive.
+    size = os.fstat(stream.fileno()).st_size
+    stream.seek(max(0, size - 40_000))
+    return stream.read(min(size, 40_000)).decode("utf-8", errors="replace")[-10_000:]
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning("Could not terminate validation process tree %s", process.pid)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.warning("Could not terminate validation process group %s", process.pid)
+
+    # Do not enter Popen's context manager or call communicate() here: both can
+    # reintroduce an unbounded wait after the timeout we just enforced.
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        logger.warning("Validation process %s did not exit after termination", process.pid)
 
 ALLOWED_COMMAND_PREFIXES = (
     ("pytest",),
@@ -133,21 +196,47 @@ def run_command(repo_root: Path, command: str, timeout_seconds: int = 60) -> dic
             "stderr": "Command blocked by coding-agent allowlist.",
         }
 
+    process = None
+    started = time.monotonic()
+    _validation_progress(
+        "validation.command.started", command=original_command,
+        timeout_seconds=timeout_seconds,
+    )
     try:
         cwd = _resolve_working_directory(repo_root, cwd_fragment)
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            process = subprocess.Popen(
+                tokens,
+                cwd=cwd,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=os.name != "nt",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            timed_out = False
+            try:
+                returncode = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_tree(process)
+                returncode = 124
 
-        completed = subprocess.run(
-            tokens,
-            cwd=cwd,
-            shell=False,
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
+            result = {
+                "command": original_command,
+                "returncode": returncode,
+                "stdout": _output_tail(stdout),
+                "stderr": _output_tail(stderr),
+            }
+            if timed_out:
+                result["stderr"] = (
+                    f"{result['stderr']}\nValidation timed out after {timeout_seconds}s. "
+                    "Process-tree termination was requested."
+                ).strip()
 
     except FileNotFoundError as exc:
-        return {
+        result = {
             "command": original_command,
             "returncode": 127,
             "stdout": "",
@@ -155,16 +244,23 @@ def run_command(repo_root: Path, command: str, timeout_seconds: int = 60) -> dic
         }
 
     except Exception as exc:
-        return {
+        if process is not None and process.poll() is None:
+            _terminate_process_tree(process)
+        result = {
             "command": original_command,
             "returncode": 1,
             "stdout": "",
             "stderr": str(exc),
         }
 
-    return {
-        "command": original_command,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout[-10_000:],
-        "stderr": completed.stderr[-10_000:],
-    }
+    except BaseException:
+        if process is not None and process.poll() is None:
+            _terminate_process_tree(process)
+        raise
+
+    _validation_progress(
+        "validation.command.completed", command=original_command,
+        returncode=result["returncode"],
+        elapsed_seconds=round(time.monotonic() - started, 1),
+    )
+    return result
