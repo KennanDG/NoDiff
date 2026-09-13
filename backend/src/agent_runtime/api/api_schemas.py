@@ -700,6 +700,11 @@ class ToolReviewResponse(ToolSummary):
     source: str
     approval_ready: bool = False
     validation_errors: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
+
+
+class ToolApprovalRequest(BaseModel):
+    acknowledge_warnings: bool = False
 
 
 

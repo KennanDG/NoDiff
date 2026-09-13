@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import ast
 import importlib.util
 import inspect
@@ -14,64 +15,38 @@ CODING_TOOLS_DIR = Path(__file__).resolve().parent / "tools"
 CUSTOM_PENDING_DIR = CODING_TOOLS_DIR / "custom_pending"
 CUSTOM_APPROVED_DIR = CODING_TOOLS_DIR / "custom_approved"
 
-# Custom tools are deliberately much more restricted than built-in application
-# code. Expand this allowlist only when a concrete reviewed tool requires it.
-SAFE_IMPORT_ROOTS = {
-    "__future__",
-    "os",
-    "ast",
-    "collections",
-    "dataclasses",
-    "datetime",
-    "enum",
-    "fnmatch",
-    "functools",
-    "hashlib",
-    "itertools",
-    "json",
-    "math",
-    "operator",
-    "pathlib",
-    "re",
-    "statistics",
-    "string",
-    "textwrap",
-    "typing",
-    "tomllib",
-}
 
-FORBIDDEN_DIRECT_CALLS = {
+STDLIB_IMPORT_ROOTS = frozenset(
+    getattr(sys, "stdlib_module_names", ())
+) | {"__future__"}
+
+NODIFF_TOOL_IMPORT_PREFIXES = (
+    "agent_runtime.agents.coding.tools",
+    "agent_runtime.agents.voice.tools",
+)
+
+REVIEW_DIRECT_CALLS = {
     "__import__",
-    "breakpoint",
     "compile",
-    "delattr",
     "eval",
     "exec",
-    "getattr",
-    "globals",
-    "locals",
-    # "open",
-    "setattr",
-    "vars",
 }
 
-FORBIDDEN_ATTRIBUTE_CALLS = {
-    # File mutation
+REVIEW_ATTRIBUTE_CALLS = {
+    # Process execution
+    "Popen",
+    "popen",
+    "system",
+
+    # Destructive filesystem operations
     "chmod",
     "chown",
-    "mkdir",
     "rename",
+    "replace",
     "rmdir",
-    "touch",
     "unlink",
     "write_bytes",
     "write_text",
-    # Process / shell / dynamic loading
-    "Popen",
-    "exec_module",
-    "open",
-    "popen",
-    "system",
 }
 
 MAX_CUSTOM_TOOL_RESULT_CHARS = 24_000
@@ -107,149 +82,161 @@ def _is_type_checking_guard(node: ast.If) -> bool:
         and test.value.id == "typing"
     )
 
+def review_custom_tool_source(name: str, source: str) -> list[str]:
+    """Return non-blocking warnings for behavior the user should review."""
+
+    normalized = source.replace("\r\n", "\n").strip() + "\n"
+
+    try:
+        tree = ast.parse(normalized, filename=f"{name}.py")
+    except SyntaxError:
+        # Syntax errors are handled by the hard validator.
+        return []
+
+    warnings: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [item.name for item in node.names]
+
+            for module in modules:
+                root = module.split(".", 1)[0]
+
+                is_stdlib = root in STDLIB_IMPORT_ROOTS
+                is_nodiff_tool = any(
+                    module == prefix or module.startswith(prefix + ".")
+                    for prefix in NODIFF_TOOL_IMPORT_PREFIXES
+                )
+
+                if not is_stdlib and not is_nodiff_tool:
+                    warnings.append(
+                        f"Imports external/project module '{module}'. "
+                        "It must be available in the packaged NoDiff runtime."
+                    )
+
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+
+            if module:
+                root = module.split(".", 1)[0]
+
+                is_stdlib = root in STDLIB_IMPORT_ROOTS
+                is_nodiff_tool = any(
+                    module == prefix or module.startswith(prefix + ".")
+                    for prefix in NODIFF_TOOL_IMPORT_PREFIXES
+                )
+
+                if not is_stdlib and not is_nodiff_tool:
+                    warnings.append(
+                        f"Imports external/project module '{module}'. "
+                        "It must be available in the packaged NoDiff runtime."
+                    )
+
+        elif isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in REVIEW_DIRECT_CALLS
+            ):
+                warnings.append(
+                    f"Uses powerful Python call '{node.func.id}(...)'."
+                )
+
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in REVIEW_ATTRIBUTE_CALLS
+            ):
+                warnings.append(
+                    f"Uses potentially destructive/system call "
+                    f"'.{node.func.attr}(...)'."
+                )
+
+    # Import-time execution deserves a warning, but should no longer be blocked.
+    for index, node in enumerate(tree.body):
+        if isinstance(
+            node,
+            (
+                ast.Import,
+                ast.ImportFrom,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            continue
+
+        if (
+            index == 0
+            and isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if value is not None and any(
+                isinstance(item, ast.Call)
+                for item in ast.walk(value)
+            ):
+                warnings.append(
+                    "Contains a top-level assignment that executes code during import."
+                )
+            continue
+
+        warnings.append(
+            f"Contains top-level '{type(node).__name__}' logic that runs during import."
+        )
+
+    # Preserve ordering while removing duplicates.
+    return list(dict.fromkeys(warnings))
+
+
 
 def validate_approved_custom_tool_source(name: str, source: str) -> str:
-    """Validate the stronger contract required before runtime activation.
+    """Validate runtime compatibility.
 
-    This is defense in depth, not an OS sandbox. Approved custom tools still run
-    as Python inside the local backend process, so the user must review the source.
+    This intentionally does not attempt to restrict user-approved Python.
+    Approved tools execute with the same process privileges as NoDiff.
     """
 
     normalized = source.replace("\r\n", "\n").strip() + "\n"
 
     try:
         tree = ast.parse(normalized, filename=f"{name}.py")
-
     except SyntaxError as exc:
         raise CustomToolValidationError(
-            f"Tool source is not valid Python: line {exc.lineno}: {exc.msg}"
+            f"Tool source is not valid Python: "
+            f"line {exc.lineno}: {exc.msg}"
         ) from exc
 
     target: ast.FunctionDef | None = None
-    public_functions: list[str] = []
+    async_target: ast.AsyncFunctionDef | None = None
 
-    for index, node in enumerate(tree.body):
-        if isinstance(node, ast.Expr):
-            if not (
-                index == 0
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-            ):
-                raise CustomToolValidationError(
-                    "Only a module docstring may appear as a top-level expression."
-                )
-            
-            continue
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            target = node
 
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            modules: list[str] = []
-
-            if isinstance(node, ast.Import):
-                modules = [item.name for item in node.names]
-
-            elif node.module:
-                modules = [node.module]
-
-            for module in modules:
-                root = module.split(".", 1)[0]
-
-                if root not in SAFE_IMPORT_ROOTS:
-                    raise CustomToolValidationError(
-                        f"Import '{module}' is not allowed in approved custom tools."
-                    )
-                
-            continue
-
-        if isinstance(node, ast.FunctionDef):
-            if node.decorator_list:
-                raise CustomToolValidationError(
-                    "Custom tool functions may not use decorators because decorators execute at import time."
-                )
-            
-            default_nodes = [*node.args.defaults, *[item for item in node.args.kw_defaults if item is not None]]
-
-            if any(isinstance(item, ast.Call) for default in default_nodes for item in ast.walk(default)):
-                raise CustomToolValidationError(
-                    "Custom tool default argument values may not execute function calls."
-                )
-            
-            if not node.name.startswith("_"):
-                public_functions.append(node.name)
-
-            if node.name == name:
-                target = node
-
-            continue
-
-        if isinstance(node, ast.AsyncFunctionDef):
-            raise CustomToolValidationError(
-                "Async custom tools are not supported yet; use a synchronous function."
-            )
-
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            value = node.value
-
-            if value is not None and any(isinstance(item, ast.Call) for item in ast.walk(value)):
-                raise CustomToolValidationError(
-                    "Top-level assignments may not execute function calls."
-                )
-            
-            continue
-
-        if isinstance(node, ast.If) and _is_type_checking_guard(node):
-            continue
-
-        raise CustomToolValidationError(
-            f"Unsupported top-level statement for an approved tool: {type(node).__name__}."
-        )
+        elif isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            async_target = node
 
     if target is None:
-        raise CustomToolValidationError(
-            f"Approved tool must define a synchronous public function named '{name}'."
-        )
-
-    if public_functions != [name]:
-        raise CustomToolValidationError(
-            "Custom tool modules must expose exactly one public function and it must "
-            f"match the filename. Found: {', '.join(public_functions) or 'none'}."
-        )
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            if node.id.startswith("__") or node.id in FORBIDDEN_DIRECT_CALLS:
-                raise CustomToolValidationError(
-                    f"Reference to '{node.id}' is not allowed in approved custom tools."
-                )
-
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            modules: list[str] = []
-            if isinstance(node, ast.Import):
-                modules = [item.name for item in node.names]
-            elif node.module:
-                modules = [node.module]
-            for module in modules:
-                root = module.split(".", 1)[0]
-                if root not in SAFE_IMPORT_ROOTS:
-                    raise CustomToolValidationError(
-                        f"Import '{module}' is not allowed in approved custom tools."
-                    )
-
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_DIRECT_CALLS:
-                raise CustomToolValidationError(
-                    f"Call to '{node.func.id}' is not allowed in approved custom tools."
-                )
-            if isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_ATTRIBUTE_CALLS:
-                raise CustomToolValidationError(
-                    f"Call to '.{node.func.attr}(...)' is not allowed in approved custom tools."
-                )
-
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+        if async_target is not None:
             raise CustomToolValidationError(
-                "Dunder attribute access is not allowed in approved custom tools."
+                f"Tool entry function '{name}' is async. "
+                "The current custom-tool runtime supports synchronous "
+                "entry functions only."
             )
 
+        raise CustomToolValidationError(
+            f"Approved tool must define a public function named '{name}'."
+        )
+
+    # Additional public helper functions/classes are intentionally allowed.
+    # Imports, decorators, filesystem access, subprocess usage, network access,
+    # and dynamic Python are user-reviewed rather than source-policy blocked.
+
     return normalized
+
 
 
 def validate_tool_signature(function: Callable[..., Any]) -> inspect.Signature:
@@ -259,12 +246,11 @@ def validate_tool_signature(function: Callable[..., Any]) -> inspect.Signature:
     for parameter in signature.parameters.values():
         if parameter.kind in {
             inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
             inspect.Parameter.POSITIONAL_ONLY,
         }:
             raise CustomToolValidationError(
-                "Custom tools may use only named parameters; *args, **kwargs, and "
-                "positional-only parameters are not supported."
+                "Custom tools may not use *args or positional-only parameters. "
+                "Named parameters and **kwargs are supported."
             )
         
     return signature
