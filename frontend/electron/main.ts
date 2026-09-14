@@ -704,6 +704,12 @@ function registerDesktopIpc() {
 );
 }
 
+function resolveApplicationIcon() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "branding", "icon.ico")
+    : path.join(applicationRoot, "build", "icon.ico");
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1440,
@@ -712,6 +718,7 @@ function createWindow() {
     minHeight: 700,
     backgroundColor: "#090b10",
     title: "NoDiff",
+    icon: resolveApplicationIcon(),
     webPreferences: {
       preload: path.join(currentDirectory, "preload.mjs"),
       contextIsolation: true,

@@ -51,6 +51,10 @@
       {
         "from": "../backend/dist/nodiff-agent-runtime",
         "to": "backend/nodiff-agent-runtime"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "branding/icon.ico"
       }
     ],
     "directories": {
@@ -59,7 +63,7 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.svg",
+      "icon": "build/icon.ico",
       "executableName": "NoDiff"
     },
     "nsis": {
