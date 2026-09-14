@@ -26,12 +26,22 @@ export type DesktopApiResponse = {
   body: string;
 };
 
+export type DesktopRuntimeSecrets = Record<string, string>;
+
 export type DesktopApi = {
   platform: NodeJS.Platform;
   runtime: DesktopRuntimeConnection;
   apiRequest: (request: DesktopApiRequest) => Promise<DesktopApiResponse>;
-  selectDirectory: (options?: DesktopDirectoryPickerOptions) => Promise<string | null>;
+  selectDirectory: (
+    options?: DesktopDirectoryPickerOptions,
+  ) => Promise<string | null>;
+
+  persistRuntimeSecrets: (
+    secrets: DesktopRuntimeSecrets,
+  ) => Promise<{ persisted: boolean }>;
 };
+
+
 
 const desktopApi: DesktopApi = Object.freeze({
   platform: process.platform,
@@ -40,10 +50,18 @@ const desktopApi: DesktopApi = Object.freeze({
       process.env.AGENT_RUNTIME_API_BASE_URL ?? "http://127.0.0.1:8765",
     apiKey: process.env.AGENT_RUNTIME_API_KEY ?? "",
   }),
+  
   apiRequest: (request) =>
     ipcRenderer.invoke("desktop:api-request", request) as Promise<DesktopApiResponse>,
+
   selectDirectory: (options) =>
     ipcRenderer.invoke("desktop:select-directory", options) as Promise<string | null>,
+
+  persistRuntimeSecrets: (secrets) =>
+    ipcRenderer.invoke(
+      "desktop:persist-runtime-secrets",
+      secrets,
+    ) as Promise<{ persisted: boolean }>,
 });
 
 contextBridge.exposeInMainWorld("desktop", desktopApi);

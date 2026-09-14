@@ -17,6 +17,7 @@ import {
 import {
   approveTool,
   deleteSkill,
+  deleteTool,
   draftSkill,
   generateTool,
   fetchSkills,
@@ -98,6 +99,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
   const [reviewingTool, setReviewingTool] = useState<ToolReviewResponse | null>(null);
   const [editingTool, setEditingTool] = useState<ToolReviewResponse | null>(null);
   const [toolReviewLoading, setToolReviewLoading] = useState(false);
+  const [toolWarningsAcknowledged, setToolWarningsAcknowledged] = useState(false);
   const skillFileRef = useRef<HTMLInputElement | null>(null);
   const toolFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -109,6 +111,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
   const load = async (targetAgent = agent) => {
     setLoading(true);
     setError(null);
+    setToolWarningsAcknowledged(false);
     setReviewingTool(null);
     try {
       const [skillResults, toolResults] = await Promise.all([
@@ -287,6 +290,48 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
     }
   };
 
+  const removeTool = async (tool: ToolSummary) => {
+  if (tool.status === "builtin") return;
+
+  const confirmed = window.confirm(
+    `Delete custom ${tool.status === "approved" ? "approved" : "pending"} tool '${tool.name}'?`,
+  );
+
+  if (!confirmed) return;
+
+  setSaving(true);
+  setError(null);
+  setMessage(null);
+
+  try {
+    await deleteTool({
+      apiBaseUrl,
+      apiKey,
+      agent,
+      name: tool.name,
+    });
+
+    if (reviewingTool?.name === tool.name) {
+      setReviewingTool(null);
+    }
+
+    if (editingTool?.name === tool.name) {
+      setEditingTool(null);
+    }
+
+    await load(agent);
+    setMessage(`Deleted custom tool '${tool.name}'.`);
+  } catch (reason) {
+    setError(
+      reason instanceof Error
+        ? reason.message
+        : "Failed to delete custom tool.",
+    );
+  } finally {
+    setSaving(false);
+  }
+};
+
   const submitToolForReview = async () => {
     setSaving(true);
     setError(null);
@@ -326,6 +371,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
         agent,
         name: tool.name,
       });
+      setToolWarningsAcknowledged(false);
       setReviewingTool(review);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Failed to load tool review.");
@@ -365,10 +411,16 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
       path: `custom_pending/${editingTool.name}.py`,
       content: source,
     });
+
     setEditingTool(null);
-    setReviewingTool(updated);
+
     await load(agent);
-    setMessage(`Saved changes to pending tool '${updated.name}'. Review it again before approval.`);
+
+    setToolWarningsAcknowledged(false);
+    setReviewingTool(updated);
+    setMessage(
+      `Saved changes to pending tool '${updated.name}'. Review it again before approval.`,
+    );
   };
 
   const approvePendingTool = async () => {
@@ -382,7 +434,9 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
         apiKey,
         agent,
         name: reviewingTool.name,
+        acknowledgeWarnings: toolWarningsAcknowledged,
       });
+      setToolWarningsAcknowledged(false);
       setReviewingTool(null);
       await load(agent);
       setMessage(
@@ -403,6 +457,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
     try {
       const rejectedName = reviewingTool.name;
       await rejectTool({ apiBaseUrl, apiKey, agent, name: rejectedName });
+      setToolWarningsAcknowledged(false);
       setReviewingTool(null);
       await load(agent);
       setMessage(`Rejected '${rejectedName}'. The quarantined source was removed.`);
@@ -660,10 +715,27 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
               return (
                 <div key={`${tool.status}:${tool.module}:${tool.name}`} className="rounded-md border border-line bg-panel p-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-xs text-ink-soft">{tool.name}</span>
-                    <span className={`text-[8px] uppercase ${statusClass}`}>
-                      {tool.status.replace("_", " ")}
+                    <span className="truncate font-mono text-xs text-ink-soft">
+                      {tool.name}
                     </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[8px] uppercase ${statusClass}`}>
+                        {tool.status.replace("_", " ")}
+                      </span>
+
+                      {tool.status !== "builtin" ? (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title={`Delete ${tool.name}`}
+                          disabled={saving}
+                          onClick={() => void removeTool(tool)}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-faint">{tool.purpose || tool.module}</p>
                   {tool.status === "pending_review" ? (
@@ -706,7 +778,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
                   type="button"
                   className="icon-button"
                   aria-label="Close tool review"
-                  onClick={() => setReviewingTool(null)}
+                  onClick={() => {setToolWarningsAcknowledged(false); setReviewingTool(null);}}
                 >
                   <X size={13} />
                 </button>
@@ -732,6 +804,41 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
                 </div>
               )}
 
+              {reviewingTool.validation_warnings.length > 0 ? (
+                <div className="mt-2 rounded border border-amber-400/25 bg-amber-400/5 p-2">
+                  <p className="text-[10px] font-semibold text-amber-300">
+                    Review warnings
+                  </p>
+
+                  <div className="mt-1 space-y-1">
+                    {reviewingTool.validation_warnings.map((item) => (
+                      <p
+                        key={item}
+                        className="text-[10px] leading-4 text-amber-200"
+                      >
+                        {item}
+                      </p>
+                    ))}
+                  </div>
+
+                  <label className="mt-3 flex cursor-pointer items-start gap-2 text-[10px] leading-4 text-muted">
+                    <input
+                      type="checkbox"
+                      checked={toolWarningsAcknowledged}
+                      onChange={(event) =>
+                        setToolWarningsAcknowledged(event.target.checked)
+                      }
+                      className="mt-0.5"
+                    />
+
+                    <span>
+                      I reviewed this source and understand that approved custom
+                      tools execute with the same local permissions as NoDiff.
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -744,7 +851,14 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
                 <button
                   type="button"
                   className="primary-button h-8 justify-center"
-                  disabled={saving || !reviewingTool.approval_ready}
+                  disabled={
+                    saving ||
+                    !reviewingTool.approval_ready ||
+                    (
+                      reviewingTool.validation_warnings.length > 0 &&
+                      !toolWarningsAcknowledged
+                    )
+                  }
                   onClick={() => void approvePendingTool()}
                 >
                   {saving ? <LoaderCircle size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
@@ -757,7 +871,9 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
           <div className="mt-5 border-t border-line pt-4">
             <h3 className="text-xs font-semibold text-ink">Upload tool for review</h3>
             <p className="mt-1 text-[9px] leading-4 text-muted">
-              Uploaded Python stays quarantined until you review and approve it. Approved custom tools are loaded through the selected agent's restricted runtime registry; pending tools are never imported.
+              Uploaded Python stays quarantined until you review and approve it.
+              Approved custom tools run inside the selected agent's backend process
+              with the same local permissions as NoDiff. Pending tools are never imported.
             </p>
 
             <input

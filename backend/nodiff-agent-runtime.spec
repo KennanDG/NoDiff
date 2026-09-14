@@ -47,10 +47,10 @@ hiddenimports = collect_submodules("agent_runtime")
 
 
 # ---------------------------------------------------------------------------
-# NoDiff built-in coding resources
+# NoDiff built-in agent resources
 # ---------------------------------------------------------------------------
 #
-# The coding agent discovers built-in skills/tools from the filesystem.
+# The coding and voice agents discover built-in skills/tools from the filesystem.
 #
 # PyInstaller normally:
 #   - does NOT include .md files automatically
@@ -58,20 +58,27 @@ hiddenimports = collect_submodules("agent_runtime")
 #     source .py files on disk
 #
 # Because NoDiff scans these directories at runtime, preserve them as physical
-# files underneath:
-#
-#   _internal/agent_runtime/agents/coding/skills
-#   _internal/agent_runtime/agents/coding/tools
+# files underneath the frozen application.
 #
 
 CODING_AGENT_ROOT = SOURCE_ROOT / "agent_runtime" / "agents" / "coding"
+VOICE_AGENT_ROOT = SOURCE_ROOT / "agent_runtime" / "agents" / "voice"
 
 BUILTIN_RESOURCE_DIRECTORIES = {
+    # Coding agent
     CODING_AGENT_ROOT / "skills": Path(
         "agent_runtime/agents/coding/skills"
     ),
     CODING_AGENT_ROOT / "tools": Path(
         "agent_runtime/agents/coding/tools"
+    ),
+
+    # Voice agent
+    VOICE_AGENT_ROOT / "skills": Path(
+        "agent_runtime/agents/voice/skills"
+    ),
+    VOICE_AGENT_ROOT / "tools": Path(
+        "agent_runtime/agents/voice/tools"
     ),
 }
 
@@ -205,6 +212,9 @@ REQUIRED_TOOLS = {
 skills_dir = CODING_AGENT_ROOT / "skills"
 tools_dir = CODING_AGENT_ROOT / "tools"
 
+voice_skills_dir = VOICE_AGENT_ROOT / "skills"
+voice_tools_dir = VOICE_AGENT_ROOT / "tools"
+
 missing_skills = [
     name for name in REQUIRED_SKILLS
     if not (skills_dir / name).is_file()
@@ -220,6 +230,33 @@ if missing_skills or missing_tools:
         "Required built-in NoDiff resources are missing before freeze. "
         f"Skills: {missing_skills or 'OK'}; "
         f"Tools: {missing_tools or 'OK'}"
+    )
+
+if not voice_skills_dir.is_dir():
+    raise RuntimeError(
+        f"Required built-in voice skills directory is missing: {voice_skills_dir}"
+    )
+
+if not voice_tools_dir.is_dir():
+    raise RuntimeError(
+        f"Required built-in voice tools directory is missing: {voice_tools_dir}"
+    )
+
+voice_skill_files = list(voice_skills_dir.glob("*.md"))
+voice_tool_files = [
+    path
+    for path in voice_tools_dir.glob("*.py")
+    if path.name != "__init__.py"
+]
+
+if not voice_skill_files:
+    raise RuntimeError(
+        f"No built-in voice skills were found in {voice_skills_dir}"
+    )
+
+if not voice_tool_files:
+    raise RuntimeError(
+        f"No built-in voice tools were found in {voice_tools_dir}"
     )
 
     

@@ -22,6 +22,7 @@ from agent_runtime.agents.coding.tool_registry import (
     CODING_TOOLS_DIR,
     ApprovedCustomToolRegistry,
     CustomToolValidationError,
+    review_custom_tool_source,
     validate_approved_custom_tool_source,
 )
 from agent_runtime.agents.voice.tool_registry import (
@@ -49,6 +50,7 @@ from agent_runtime.api.api_schemas import (
     SkillSummary,
     ToolSummary,
     ToolReviewResponse,
+    ToolApprovalRequest,
     LocalRepositorySessionResponse,
     LocalRepositorySessionUpdateRequest,
 )
@@ -409,6 +411,13 @@ def _render_skill_markdown(
     )
 
 
+def _tool_import_path(agent: AgentKind, module: str) -> str:
+    if agent == "coding":
+        return f"agent_runtime.agents.coding.tools.{module}"
+
+    return f"agent_runtime.agents.voice.tools.{module}"
+
+
 async def _generate_skill_draft(request: SkillDraftRequest) -> SkillDraftResponse:
     tools = _executable_tool_catalog(request.agent)
     available_names = {tool.name for tool in tools}
@@ -566,17 +575,26 @@ class _GeneratedToolDraft(BaseModel):
 
 async def _generate_tool_draft(request: _ToolGenerateRequest) -> tuple[str, str, str]:
     tools = _executable_tool_catalog(request.tool_type)
-    tool_catalog = '\n'.join(
-        f'- {tool.name}: {tool.purpose or tool.module}'
+
+    tool_catalog = "\n".join(
+        (
+            f"- {tool.name}: {tool.purpose or tool.module} "
+            f"[import module: "
+            f"{_tool_import_path(request.tool_type, tool.module)}]"
+        )
         for tool in tools
-    ) or '- No executable tools are currently registered for this agent.'
+    ) or "- No executable tools are currently registered for this agent."
 
     parser = PydanticOutputParser(pydantic_object=_GeneratedToolDraft)
+
     system_prompt = (
-        'You create safe custom Python tools for AI agents. Return only the requested structured object. '
-        'Preserve the user intent. Do not generate code that reads secrets, disables safety checks, '
-        'performs destructive operations, or makes undocumented network calls. '
-        'The generated source must be a complete, importable Python module.'
+        "You create functional custom Python tools for AI agents. "
+        "Return only the requested structured object. "
+        "The user will review and explicitly approve the generated Python "
+        "before it becomes executable. Standard-library imports, installed "
+        "third-party packages, and imports from existing NoDiff tool modules "
+        "are allowed when useful. Do not fabricate packages or module paths. "
+        "The generated source must be a complete importable Python module."
     )
     user_prompt = f'''
 Create a custom tool for the {request.tool_type} agent.
@@ -590,10 +608,13 @@ Create a custom tool for the {request.tool_type} agent.
 # Requirements
 - name must be lowercase snake_case.
 - purpose must be a concise one-sentence description.
-- source must contain only Python code for a single module.
-- The module must define exactly one public function whose name matches the requested name.
-- Keep the implementation small, explicit, and non-destructive.
-- Use standard library or already available dependencies only.
+- source must contain Python code for a complete module.
+- The module must define a public entry function whose name matches the tool name.
+- Helper functions, helper classes, decorators, and imports are allowed.
+- Python standard-library modules may be used freely.
+- Installed third-party dependencies may be imported.
+- Existing NoDiff tools may be imported using the exact module paths in the catalog.
+- Reuse an existing NoDiff tool instead of duplicating it when appropriate.
 
 {parser.get_format_instructions()}
 '''.strip()
@@ -701,56 +722,42 @@ def _scan_tool_file(
 
 
 def _validate_quarantined_tool_source(name: str, source: str) -> str:
+    """Validate only what is necessary to safely store/review a pending tool."""
+
     normalized = source.replace("\r\n", "\n").strip() + "\n"
+
     if "\x00" in normalized:
-        raise HTTPException(status_code=400, detail="Tool source contains a null byte.")
+        raise HTTPException(
+            status_code=400,
+            detail="Tool source contains a null byte.",
+        )
 
     try:
         tree = ast.parse(normalized, filename=f"{name}.py")
     except SyntaxError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Tool source is not valid Python: line {exc.lineno}: {exc.msg}",
+            detail=(
+                f"Tool source is not valid Python: "
+                f"line {exc.lineno}: {exc.msg}"
+            ),
         ) from exc
 
-    public_functions = {
-        node.name
+    matching_functions = [
+        node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not node.name.startswith("_")
-    }
-    if name not in public_functions:
+        and node.name == name
+    ]
+
+    if not matching_functions:
         raise HTTPException(
             status_code=400,
-            detail=f"The quarantined module must define a public function named '{name}'.",
+            detail=(
+                f"The custom module must define an entry function "
+                f"named '{name}'."
+            ),
         )
-
-    # This file is deliberately never imported by the runtime. Reject obvious
-    # top-level execution anyway so a later human review starts from a safer file.
-    allowed_top_level = (
-        ast.Expr,       # module docstring only; checked below
-        ast.Import,
-        ast.ImportFrom,
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-        ast.ClassDef,
-        ast.Assign,
-        ast.AnnAssign,
-        ast.If,         # TYPE_CHECKING guards
-    )
-    for index, node in enumerate(tree.body):
-        if not isinstance(node, allowed_top_level):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported top-level statement in quarantined tool: {type(node).__name__}.",
-            )
-        if isinstance(node, ast.Expr) and not (
-            index == 0 and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Only a module docstring may appear as a top-level expression.",
-            )
 
     return normalized
 
@@ -969,16 +976,26 @@ def _custom_tool_path(agent: AgentKind, name: str, *, status: Literal["pending_r
     return path
 
 
-def _approval_validation_errors(agent: AgentKind, name: str, source: str) -> list[str]:
+def _approval_review(
+    agent: AgentKind,
+    name: str,
+    source: str,
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings = review_custom_tool_source(name, source)
+
     try:
-        _validate_quarantined_tool_source(name, source)
         validate_approved_custom_tool_source(name, source)
+
         if agent == "voice":
             validate_voice_custom_tool_source(name, source)
+
     except (HTTPException, CustomToolValidationError) as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return [str(detail)]
-    return []
+        errors.append(str(detail))
+
+    return errors, warnings
+
 
 
 def _candidate_registry(agent: AgentKind, directory: Path):
@@ -1005,13 +1022,18 @@ def review_tool(agent: AgentKind, name: str) -> ToolReviewResponse:
     if match is None:
         raise HTTPException(status_code=400, detail="Could not discover the pending tool function.")
 
-    validation_errors = _approval_validation_errors(agent, path.stem, source)
+    validation_errors, validation_warnings = _approval_review(
+        agent,
+        path.stem,
+        source,
+    )
 
     return ToolReviewResponse(
         **match.model_dump(),
         source=source,
         approval_ready=not validation_errors,
         validation_errors=validation_errors,
+        validation_warnings=validation_warnings,
     )
 
 
@@ -1027,25 +1049,74 @@ def update_tool_file(request: ToolFileUpdateRequest) -> ToolReviewResponse:
     return review_tool(request.agent, name)
 
 
-@router.post("/tools/{agent}/{name}/approve", response_model=ToolSummary)
-def approve_tool(agent: AgentKind, name: str) -> ToolSummary:
-    pending_path = _custom_tool_path(agent, name, status="pending_review")
-    approved_path = _custom_tool_path(agent, name, status="approved")
+@router.post("/tools/{agent}/{name}/approve", response_model=ToolSummary,)
+def approve_tool(agent: AgentKind, name: str, request: ToolApprovalRequest | None = None,) -> ToolSummary:
+    
+    pending_path = _custom_tool_path(
+        agent,
+        name,
+        status="pending_review",
+    )
+    approved_path = _custom_tool_path(
+        agent,
+        name,
+        status="approved",
+    )
 
     if not pending_path.exists():
-        raise HTTPException(status_code=404, detail="Pending tool does not exist.")
+        raise HTTPException(
+            status_code=404,
+            detail="Pending tool does not exist.",
+        )
+
     if approved_path.exists():
-        raise HTTPException(status_code=409, detail=f"Approved tool already exists: {name}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Approved tool already exists: {name}",
+        )
 
     source = pending_path.read_text(encoding="utf-8")
-    source = _validate_quarantined_tool_source(pending_path.stem, source)
+    source = _validate_quarantined_tool_source(
+        pending_path.stem,
+        source,
+    )
 
-    try:
-        source = validate_approved_custom_tool_source(pending_path.stem, source)
-        if agent == "voice":
-            source = validate_voice_custom_tool_source(pending_path.stem, source)
-    except CustomToolValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    validation_errors, validation_warnings = _approval_review(
+        agent,
+        pending_path.stem,
+        source,
+    )
+
+    if validation_errors:
+        raise HTTPException(
+            status_code=400,
+            detail=" ".join(validation_errors),
+        )
+
+    acknowledged = bool(
+        request and request.acknowledge_warnings
+    )
+
+    if validation_warnings and not acknowledged:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This tool has review warnings. "
+                "Review the source and explicitly acknowledge the warnings "
+                "before approval."
+            ),
+        )
+
+    source = validate_approved_custom_tool_source(
+        pending_path.stem,
+        source,
+    )
+
+    if agent == "voice":
+        source = validate_voice_custom_tool_source(
+            pending_path.stem,
+            source,
+        )
 
     # Import/signature-check the candidate outside custom_approved first. This keeps
     # approval atomic from the runtime registry's perspective: a concurrent agent
@@ -1090,6 +1161,58 @@ def reject_tool(agent: AgentKind, name: str) -> dict[str, bool]:
         raise HTTPException(status_code=404, detail="Pending tool does not exist.")
     pending_path.unlink()
     return {"rejected": True}
+
+
+@router.delete("/tools/{agent}/{name}")
+def delete_custom_tool(agent: AgentKind, name: str) -> dict[str, bool | str]:
+    normalized = name.strip().lower().replace("-", "_")
+
+    if not NAME_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Invalid tool name.")
+
+    pending_path = _custom_tool_path(
+        agent,
+        normalized,
+        status="pending_review",
+    )
+    approved_path = _custom_tool_path(
+        agent,
+        normalized,
+        status="approved",
+    )
+
+    if pending_path.exists():
+        pending_path.unlink()
+        return {
+            "deleted": True,
+            "status": "pending_review",
+        }
+
+    if approved_path.exists():
+        approved_path.unlink()
+
+        # VoiceAgentService may hold runtime state that was assembled before the
+        # deletion. Force the next voice turn to reconstruct it.
+        if agent == "voice":
+            try:
+                from agent_runtime.api.routers.voice_agent import get_voice_service
+
+                get_voice_service.cache_clear()
+            except (ImportError, AttributeError):
+                pass
+
+        return {
+            "deleted": True,
+            "status": "approved",
+        }
+
+    # Deliberately do not fall back to tool_root/<name>.py.
+    # Anything outside custom_pending/custom_approved is a built-in.
+    raise HTTPException(
+        status_code=404,
+        detail="Custom tool does not exist.",
+    )
+
 
 
 @router.post("/generate-tools", response_model=ToolReviewResponse)

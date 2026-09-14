@@ -81,11 +81,13 @@ def _tool_purpose(source: str, name: str) -> str:
 
 
 def validate_voice_custom_tool_source(name: str, source: str) -> str:
-    """Validate the additional runtime contract for a voice custom tool.
+    """Validate the voice-specific runtime contract.
 
-    The shared coding-tool validator supplies the security restrictions. This layer
-    adds a voice-specific interface rule: every required argument must be one that
-    the backend can inject deterministically before the intake model runs.
+    The shared custom-tool validator checks general Python/runtime
+    compatibility without restricting user-approved behavior.
+
+    Voice tools additionally require that every mandatory parameter
+    can be supplied deterministically from voice-agent state.
     """
 
     normalized = validate_approved_custom_tool_source(name, source)
@@ -103,10 +105,10 @@ def validate_voice_custom_tool_source(name: str, source: str) -> str:
             f"Approved voice tool must define a function named '{name}'."
         )
 
-    if target.args.posonlyargs or target.args.vararg or target.args.kwarg:
+    if target.args.posonlyargs or target.args.vararg:
         raise CustomToolValidationError(
-            "Voice custom tools may use only named parameters; positional-only "
-            "parameters, *args, and **kwargs are not supported."
+            "Voice custom tools may not use positional-only parameters "
+            "or *args. Named parameters and **kwargs are supported."
         )
 
     positional = [*target.args.args]

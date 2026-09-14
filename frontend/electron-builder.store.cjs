@@ -52,7 +52,7 @@ module.exports = {
         arch: ["x64"],
       },
     ],
-    icon: "build/icon.svg",
+    icon: "build/icon.ico",
     executableName: "NoDiff",
   },
   msix: {
