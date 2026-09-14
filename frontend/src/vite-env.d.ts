@@ -29,11 +29,17 @@ interface DesktopApiResponse {
 interface DesktopBridge {
   platform: string;
   runtime?: DesktopRuntimeConnection;
-  apiRequest?: (request: DesktopApiRequest) => Promise<DesktopApiResponse>;
+  apiRequest?: (
+    request: DesktopApiRequest,
+  ) => Promise<DesktopApiResponse>;
 
   selectDirectory?: (
     options?: DesktopDirectoryPickerOptions,
   ) => Promise<string | null>;
+
+  persistRuntimeSecrets?: (
+    secrets: Record<string, string>,
+  ) => Promise<{ persisted: boolean }>;
 }
 
 interface Window {

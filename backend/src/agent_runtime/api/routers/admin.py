@@ -1163,6 +1163,58 @@ def reject_tool(agent: AgentKind, name: str) -> dict[str, bool]:
     return {"rejected": True}
 
 
+@router.delete("/tools/{agent}/{name}")
+def delete_custom_tool(agent: AgentKind, name: str) -> dict[str, bool | str]:
+    normalized = name.strip().lower().replace("-", "_")
+
+    if not NAME_RE.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Invalid tool name.")
+
+    pending_path = _custom_tool_path(
+        agent,
+        normalized,
+        status="pending_review",
+    )
+    approved_path = _custom_tool_path(
+        agent,
+        normalized,
+        status="approved",
+    )
+
+    if pending_path.exists():
+        pending_path.unlink()
+        return {
+            "deleted": True,
+            "status": "pending_review",
+        }
+
+    if approved_path.exists():
+        approved_path.unlink()
+
+        # VoiceAgentService may hold runtime state that was assembled before the
+        # deletion. Force the next voice turn to reconstruct it.
+        if agent == "voice":
+            try:
+                from agent_runtime.api.routers.voice_agent import get_voice_service
+
+                get_voice_service.cache_clear()
+            except (ImportError, AttributeError):
+                pass
+
+        return {
+            "deleted": True,
+            "status": "approved",
+        }
+
+    # Deliberately do not fall back to tool_root/<name>.py.
+    # Anything outside custom_pending/custom_approved is a built-in.
+    raise HTTPException(
+        status_code=404,
+        detail="Custom tool does not exist.",
+    )
+
+
+
 @router.post("/generate-tools", response_model=ToolReviewResponse)
 async def generate_tools(request: _ToolGenerateRequest) -> ToolReviewResponse:
     '''Generate a custom tool draft and quarantine it for review.'''

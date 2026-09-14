@@ -380,6 +380,32 @@ export const rejectTool = async ({
   return readJson<{ rejected: boolean }>(response);
 };
 
+export const deleteTool = async ({
+  apiBaseUrl,
+  apiKey,
+  agent,
+  name,
+}: ApiClientConfig & {
+  agent: AgentKind;
+  name: string;
+}): Promise<{
+  deleted: boolean;
+  status: "pending_review" | "approved";
+}> => {
+  const response = await apiFetch(
+    `${apiBaseUrl}/admin/tools/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`,
+    {
+      method: "DELETE",
+      headers: authHeaders(apiKey),
+    },
+  );
+
+  return readJson<{
+    deleted: boolean;
+    status: "pending_review" | "approved";
+  }>(response);
+};
+
 export const quarantineTool = async ({
   apiBaseUrl,
   apiKey,

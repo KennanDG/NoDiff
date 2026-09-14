@@ -62,6 +62,15 @@ const providerLabel: Record<ChatProvider, string> = {
   google: "Google",
 };
 
+const providerSecretEnvNames: Record<ChatProvider, string> = {
+  groq: "GROQ_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_API_KEY",
+};
+
 const emptySecrets = (): Record<ChatProvider, string> => ({
   groq: "",
   deepseek: "",
@@ -435,10 +444,40 @@ export const AgentSettingsModal = ({
       });
       setConfiguration(updated);
       onSaved?.(updated);
+
+      // Persist secrets
+      const persistentSecrets: Record<string, string> = {};
+
+      for (const [provider, value] of Object.entries(changedSecrets)) {
+        const trimmed = value?.trim();
+        if (!trimmed) continue;
+
+        persistentSecrets[
+          providerSecretEnvNames[provider as ChatProvider]
+        ] = trimmed;
+      }
+
+      if (githubToken.trim()) {
+        persistentSecrets.GITHUB_TOKEN = githubToken.trim();
+      }
+
+      if (serpApiKey.trim()) {
+        persistentSecrets.SERPAPI_API_KEY = serpApiKey.trim();
+      }
+
+      if (
+        window.desktop?.persistRuntimeSecrets &&
+        Object.keys(persistentSecrets).length > 0
+      ) {
+        await window.desktop.persistRuntimeSecrets(persistentSecrets);
+      }
+
+      // Clear secrets from renderer
       setSecrets(emptySecrets());
       setGitHubToken("");
       setSerpApiKey("");
       setCatalogs({});
+
       await loadConfigurationCatalogs(updated);
       setMessage("Saved. New coding, vision, voice, and web-search runs will use this configuration.");
     } catch (reason) {

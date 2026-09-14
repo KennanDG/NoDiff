@@ -17,6 +17,7 @@ import {
 import {
   approveTool,
   deleteSkill,
+  deleteTool,
   draftSkill,
   generateTool,
   fetchSkills,
@@ -288,6 +289,48 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
       setSaving(false);
     }
   };
+
+  const removeTool = async (tool: ToolSummary) => {
+  if (tool.status === "builtin") return;
+
+  const confirmed = window.confirm(
+    `Delete custom ${tool.status === "approved" ? "approved" : "pending"} tool '${tool.name}'?`,
+  );
+
+  if (!confirmed) return;
+
+  setSaving(true);
+  setError(null);
+  setMessage(null);
+
+  try {
+    await deleteTool({
+      apiBaseUrl,
+      apiKey,
+      agent,
+      name: tool.name,
+    });
+
+    if (reviewingTool?.name === tool.name) {
+      setReviewingTool(null);
+    }
+
+    if (editingTool?.name === tool.name) {
+      setEditingTool(null);
+    }
+
+    await load(agent);
+    setMessage(`Deleted custom tool '${tool.name}'.`);
+  } catch (reason) {
+    setError(
+      reason instanceof Error
+        ? reason.message
+        : "Failed to delete custom tool.",
+    );
+  } finally {
+    setSaving(false);
+  }
+};
 
   const submitToolForReview = async () => {
     setSaving(true);
@@ -672,10 +715,27 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
               return (
                 <div key={`${tool.status}:${tool.module}:${tool.name}`} className="rounded-md border border-line bg-panel p-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-xs text-ink-soft">{tool.name}</span>
-                    <span className={`text-[8px] uppercase ${statusClass}`}>
-                      {tool.status.replace("_", " ")}
+                    <span className="truncate font-mono text-xs text-ink-soft">
+                      {tool.name}
                     </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[8px] uppercase ${statusClass}`}>
+                        {tool.status.replace("_", " ")}
+                      </span>
+
+                      {tool.status !== "builtin" ? (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title={`Delete ${tool.name}`}
+                          disabled={saving}
+                          onClick={() => void removeTool(tool)}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="mt-1 text-xs leading-5 text-faint">{tool.purpose || tool.module}</p>
                   {tool.status === "pending_review" ? (

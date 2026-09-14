@@ -1,6 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +15,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  safeStorage,
   shell,
   type OpenDialogOptions,
 } from "electron";
@@ -30,6 +37,27 @@ const runtimeDataDirectory = configuredRuntimeDataDirectory
   ? path.resolve(configuredRuntimeDataDirectory)
   : path.join(applicationDataDirectory, "agent-runtime");
 const memoryDirectory = path.join(runtimeDataDirectory, "memory");
+
+const PERSISTENT_SECRET_ENV_KEYS = new Set([
+  "GROQ_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GOOGLE_API_KEY",
+  "GITHUB_TOKEN",
+  "SERPAPI_API_KEY",
+]);
+
+const runtimeSecretsPath = path.join(
+  runtimeDataDirectory,
+  "runtime-secrets.json",
+);
+
+type PersistedSecretsFile = {
+  version: 1;
+  secrets: Record<string, string>;
+};
 
 type DesktopDirectoryPickerOptions = {
   title?: string;
@@ -73,6 +101,120 @@ let backendExitCode: number | null = null;
 let backendExitSignal: NodeJS.Signals | null = null;
 let backendClosePromise: Promise<void> | null = null;
 
+
+function loadPersistentRuntimeSecrets() {
+  if (!existsSync(runtimeSecretsPath)) return;
+
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn(
+      "OS-backed secret encryption is unavailable; persisted NoDiff credentials were not loaded.",
+    );
+    return;
+  }
+
+  try {
+    const raw = JSON.parse(
+      readFileSync(runtimeSecretsPath, "utf8"),
+    ) as PersistedSecretsFile;
+
+    if (
+      raw?.version !== 1 ||
+      !raw.secrets ||
+      typeof raw.secrets !== "object"
+    ) {
+      return;
+    }
+
+    for (const [environmentName, encrypted] of Object.entries(raw.secrets)) {
+      if (!PERSISTENT_SECRET_ENV_KEYS.has(environmentName)) continue;
+      if (typeof encrypted !== "string" || !encrypted) continue;
+
+      try {
+        const value = safeStorage.decryptString(
+          Buffer.from(encrypted, "base64"),
+        );
+
+        if (value) {
+          process.env[environmentName] = value;
+        }
+      } catch (error) {
+        console.error(
+          `Unable to decrypt persisted credential ${environmentName}`,
+          error,
+        );
+      }
+    }
+  } catch (error) {
+    console.error("Unable to load persisted NoDiff credentials", error);
+  }
+}
+
+function persistRuntimeSecrets(
+  values: Record<string, string>,
+) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      "OS-backed credential encryption is not available on this system.",
+    );
+  }
+
+  let current: PersistedSecretsFile = {
+    version: 1,
+    secrets: {},
+  };
+
+  if (existsSync(runtimeSecretsPath)) {
+    try {
+      const parsed = JSON.parse(
+        readFileSync(runtimeSecretsPath, "utf8"),
+      ) as PersistedSecretsFile;
+
+      if (
+        parsed?.version === 1 &&
+        parsed.secrets &&
+        typeof parsed.secrets === "object"
+      ) {
+        current = parsed;
+      }
+    } catch {
+      // Replace malformed state with a new credential file.
+    }
+  }
+
+  for (const [environmentName, rawValue] of Object.entries(values)) {
+    if (!PERSISTENT_SECRET_ENV_KEYS.has(environmentName)) {
+      throw new Error(
+        `Unsupported persistent runtime credential: ${environmentName}`,
+      );
+    }
+
+    const value = rawValue.trim();
+    if (!value) continue;
+
+    current.secrets[environmentName] = safeStorage
+      .encryptString(value)
+      .toString("base64");
+
+    // Keep the running Electron process synchronized too.
+    process.env[environmentName] = value;
+  }
+
+  mkdirSync(path.dirname(runtimeSecretsPath), { recursive: true });
+
+  writeFileSync(
+    runtimeSecretsPath,
+    JSON.stringify(current, null, 2),
+    "utf8",
+  );
+}
+
+
+function redactRuntimeSecrets(value: string) {
+  const apiKey = process.env.AGENT_RUNTIME_API_KEY;
+  return apiKey ? value.replaceAll(apiKey, "<redacted>") : value;
+}
+
+
 function appendDiagnosticTail(current: string, chunk: Buffer | string) {
   const next = current + chunk.toString();
   return next.length > SIDECAR_DIAGNOSTIC_TAIL_LENGTH
@@ -80,10 +222,6 @@ function appendDiagnosticTail(current: string, chunk: Buffer | string) {
     : next;
 }
 
-function redactRuntimeSecrets(value: string) {
-  const apiKey = process.env.AGENT_RUNTIME_API_KEY;
-  return apiKey ? value.replaceAll(apiKey, "<redacted>") : value;
-}
 
 function writeSidecarDiagnosticLog(startupError: unknown): string | null {
   try {
@@ -450,6 +588,7 @@ function registerDesktopIpc() {
   // same channel more than once.
   ipcMain.removeHandler("desktop:select-directory");
   ipcMain.removeHandler("desktop:api-request");
+  ipcMain.removeHandler("desktop:persist-runtime-secrets");
 
   ipcMain.handle(
     "desktop:api-request",
@@ -555,6 +694,14 @@ function registerDesktopIpc() {
       return path.normalize(result.filePaths[0]);
     },
   );
+
+  ipcMain.handle(
+  "desktop:persist-runtime-secrets",
+  (_event, values: Record<string, string>) => {
+    persistRuntimeSecrets(values);
+    return { persisted: true };
+  },
+);
 }
 
 function createWindow() {
@@ -590,6 +737,7 @@ app.whenReady().then(async () => {
   registerDesktopIpc();
 
   try {
+    loadPersistentRuntimeSecrets();
     await configureRuntimeConnection();
     await startBackendSidecar();
     createWindow();
