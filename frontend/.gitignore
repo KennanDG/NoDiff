@@ -2,5 +2,7 @@ node_modules
 dist
 dist-electron
 release
+release-store
 *.local
 *.log
+NoDiff-MSIX-Dev.cer

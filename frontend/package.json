@@ -13,7 +13,7 @@
     "backend:build:windows": "cd ../backend && uv run pyinstaller --noconfirm --clean nodiff-agent-runtime.spec",
     "desktop:build": "npm run desktop:build:windows",
     "desktop:build:windows": "npm run backend:build:windows && npm run build && electron-builder --win nsis --x64",
-    "desktop:build:store": "npm run backend:build:windows && npm run build && electron-builder --config electron-builder.store.cjs --win msix --x64"
+    "desktop:build:store": "npm run backend:build:windows && npm run build && electron-builder --config electron-builder.store.cjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -33,7 +33,7 @@
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.2",
     "electron": "^42.4.1",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "27.0.0-alpha.8",
     "tailwindcss": "^4.1.10",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",

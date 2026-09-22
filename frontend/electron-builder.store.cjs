@@ -39,6 +39,7 @@ module.exports = {
     {
       from: "../backend/dist/nodiff-agent-runtime",
       to: "backend/nodiff-agent-runtime",
+      filter: ["**/*"],
     },
   ],
   directories: {
