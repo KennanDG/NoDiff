@@ -4,7 +4,10 @@ import logging
 import os
 import sys
 import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from typing import AsyncIterator
 
 import uvicorn
@@ -25,8 +28,44 @@ from agent_runtime.api.routers.voice_agent import router as voice_agent_router
 from agent_runtime.config.settings import settings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_runtime_logging() -> RotatingFileHandler:
+    log_directory = settings.agent_runtime_data_dir / "logs"
+    log_directory.mkdir(parents=True, exist_ok=True)
+    log_path = log_directory / "runtime.log"
+    handler = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s [%(process)d] %(message)s"
+    ))
+    for name in ("", "uvicorn"):
+        target = logging.getLogger(name)
+        target.setLevel(logging.INFO)
+        target.addHandler(handler)
+    logger.info("Runtime logging started: %s", log_path)
+    return handler
+
+
+async def _request_diagnostics(request, call_next):
+    request_id = uuid.uuid4().hex[:10]
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("Request %s failed: %s %s", request_id, request.method, request.url.path)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal error (request {request_id}). See logs/runtime.log in NoDiff agent-runtime."},
+        )
+    elapsed = (time.monotonic() - started) * 1000
+    if response.status_code >= 400 or elapsed >= 10_000:
+        logger.warning("Request %s %s %s -> %s (%.0fms)", request_id, request.method,
+                       request.url.path, response.status_code, elapsed)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def _env_bool(
@@ -130,6 +169,7 @@ def create_app() -> FastAPI:
     # Register this after CORSMiddleware so it wraps the CORS preflight response
     # and can add Chromium's private-network opt-in header when requested.
     app.middleware("http")(_private_network_access_middleware)
+    app.middleware("http")(_request_diagnostics)
 
     app.include_router(health_router)
     app.include_router(coding_agent_router)
@@ -170,6 +210,7 @@ def _monitor_parent_stdin(server: uvicorn.Server) -> None:
 
 
 def main() -> None:
+    file_handler = _configure_runtime_logging()
     host = os.getenv("AGENT_RUNTIME_HOST", "127.0.0.1")
     port = int(os.getenv("AGENT_RUNTIME_PORT", "8765"))
     log_level = os.getenv("AGENT_RUNTIME_LOG_LEVEL", "info")
@@ -180,6 +221,11 @@ def main() -> None:
         port=port,
         log_level=log_level,
     )
+    # Uvicorn installs its own logger configuration when Config is constructed.
+    # Reattach the persistent handler after that setup.
+    uvicorn_logger = logging.getLogger("uvicorn")
+    if file_handler not in uvicorn_logger.handlers:
+        uvicorn_logger.addHandler(file_handler)
     server = uvicorn.Server(config)
 
     shutdown_monitor = threading.Thread(

@@ -158,7 +158,7 @@ def route_skill(
 
 
 
-def _custom_skill_dir() -> Path:
+def custom_skill_dir(agent: str = "coding") -> Path:
     root = os.getenv(
         "AGENT_RUNTIME_DATA_DIR",
         "",
@@ -176,7 +176,7 @@ def _custom_skill_dir() -> Path:
     return (
         base
         / "agents"
-        / "coding"
+        / agent
         / "skills"
     )
 
@@ -192,7 +192,9 @@ class SkillRegistry:
 
     def __init__(self, skills_dir: Path | None = None, custom_skills_dir: Path | None = None) -> None:
         self.skills_dir = skills_dir or Path(__file__).parent / "skills"
-        self.custom_skills_dir = (custom_skills_dir or _custom_skill_dir())
+        self.custom_skills_dir = custom_skills_dir or custom_skill_dir(
+            "voice" if self.skills_dir.name == "skills" and self.skills_dir.parent.name == "voice" else "coding"
+        )
         self._skills: dict[str, Skill] = {}
 
 
@@ -211,6 +213,9 @@ class SkillRegistry:
             for path in sorted(
                 directory.glob("*.md")
             ):
+                if (directory == self.skills_dir and path.stem.startswith(_CUSTOM_SKILL_PREFIX)
+                        and (self.custom_skills_dir / f"{path.stem}.deleted").exists()):
+                    continue
                 try:
                     instructions = path.read_text(
                         encoding="utf-8",
