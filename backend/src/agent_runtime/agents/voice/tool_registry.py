@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import ast
 import copy
 import importlib.util
@@ -17,8 +18,30 @@ from agent_runtime.agents.coding.tool_registry import (
 
 
 VOICE_TOOLS_DIR = Path(__file__).resolve().parent / "tools"
-VOICE_CUSTOM_PENDING_DIR = VOICE_TOOLS_DIR / "custom_pending"
-VOICE_CUSTOM_APPROVED_DIR = VOICE_TOOLS_DIR / "custom_approved"
+
+def _runtime_data_root() -> Path:
+    configured = os.getenv("AGENT_RUNTIME_DATA_DIR", "").strip()
+
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    # Development/fallback path.
+    return Path.home() / ".nodiff" / "agent-runtime"
+
+VOICE_CUSTOM_TOOLS_DIR = (
+    _runtime_data_root()
+    / "agents"
+    / "voice"
+    / "tools"
+)
+
+VOICE_CUSTOM_PENDING_DIR = (
+    VOICE_CUSTOM_TOOLS_DIR / "custom_pending"
+)
+
+VOICE_CUSTOM_APPROVED_DIR = (
+    VOICE_CUSTOM_TOOLS_DIR / "custom_approved"
+)
 
 # Voice custom tools run before the intake model and receive only backend-owned,
 # read-only context. Required parameters outside this set cannot be satisfied safely

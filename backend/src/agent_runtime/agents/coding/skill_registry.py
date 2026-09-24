@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,6 +156,32 @@ def route_skill(
     )[0]
 
 
+
+
+def _custom_skill_dir() -> Path:
+    root = os.getenv(
+        "AGENT_RUNTIME_DATA_DIR",
+        "",
+    ).strip()
+
+    if root:
+        base = Path(root).expanduser().resolve()
+    else:
+        base = (
+            Path.home()
+            / ".nodiff"
+            / "agent-runtime"
+        )
+
+    return (
+        base
+        / "agents"
+        / "coding"
+        / "skills"
+    )
+
+
+
 class SkillRegistry:
     """Load Markdown skill playbooks from one agent-specific directory.
 
@@ -163,30 +190,42 @@ class SkillRegistry:
     process restart. Skill files are treated as data only and are never executed.
     """
 
-    def __init__(self, skills_dir: Path | None = None) -> None:
+    def __init__(self, skills_dir: Path | None = None, custom_skills_dir: Path | None = None) -> None:
         self.skills_dir = skills_dir or Path(__file__).parent / "skills"
+        self.custom_skills_dir = (custom_skills_dir or _custom_skill_dir())
         self._skills: dict[str, Skill] = {}
+
 
     def load(self) -> SkillRegistry:
         self._skills.clear()
 
-        if not self.skills_dir.exists():
-            return self
+        directories = [
+            self.skills_dir,
+            self.custom_skills_dir,
+        ]
 
-        for path in sorted(self.skills_dir.glob("*.md")):
-            try:
-                instructions = path.read_text(encoding="utf-8")
-            except OSError:
+        for directory in directories:
+            if not directory.exists():
                 continue
 
-            self._skills[path.stem] = Skill(
-                name=path.stem,
-                purpose=_extract_purpose(instructions),
-                instructions=instructions,
-                path=path,
-                allowed_tools=extract_allowed_tools(instructions),
-                custom=path.stem.startswith(_CUSTOM_SKILL_PREFIX),
-            )
+            for path in sorted(
+                directory.glob("*.md")
+            ):
+                try:
+                    instructions = path.read_text(
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    continue
+
+                self._skills[path.stem] = Skill(
+                    name=path.stem,
+                    purpose=_extract_purpose(instructions),
+                    instructions=instructions,
+                    path=path,
+                    allowed_tools=extract_allowed_tools(instructions),
+                    custom=path.stem.startswith(_CUSTOM_SKILL_PREFIX),
+                )
 
         return self
 

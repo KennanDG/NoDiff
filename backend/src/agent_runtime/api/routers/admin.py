@@ -20,13 +20,16 @@ from fastapi import APIRouter, HTTPException, Query
 from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
 from agent_runtime.agents.coding.tool_registry import (
     CODING_TOOLS_DIR,
+    CODING_CUSTOM_TOOLS_DIR,
     ApprovedCustomToolRegistry,
     CustomToolValidationError,
     review_custom_tool_source,
     validate_approved_custom_tool_source,
 )
+
 from agent_runtime.agents.voice.tool_registry import (
     VOICE_TOOLS_DIR,
+    VOICE_CUSTOM_TOOLS_DIR,
     ApprovedCustomVoiceToolRegistry,
     validate_voice_custom_tool_source,
 )
@@ -71,11 +74,15 @@ SKILL_DIRS: dict[AgentKind, Path] = {
     "coding": SkillRegistry().skills_dir.resolve(),
     "voice": VOICE_SKILLS_DIR.resolve(),
 }
+
 TOOL_DIRS: dict[AgentKind, Path] = {
-    # Resolve coding tools from the importable agent_runtime package itself. This avoids
-    # accidentally creating src/agents/coding/tools beside src/agent_runtime/... .
     "coding": CODING_TOOLS_DIR,
-    "voice": VOICE_TOOLS_DIR.resolve(),
+    "voice": VOICE_TOOLS_DIR,
+}
+
+CUSTOM_TOOL_DIRS: dict[AgentKind, Path] = {
+    "coding": CODING_CUSTOM_TOOLS_DIR,
+    "voice": VOICE_CUSTOM_TOOLS_DIR,
 }
 
 
@@ -925,40 +932,93 @@ def delete_skill(agent: AgentKind, name: str) -> dict[str, bool]:
 
 
 @router.get("/tools", response_model=list[ToolSummary])
-def list_tools(agent: AgentKind = Query(...)) -> list[ToolSummary]:
-    _migrate_agent_assets(agent)
+def list_tools(
+    agent: AgentKind = Query(...),
+) -> list[ToolSummary]:
 
-    tool_root = _safe_agent_dir(TOOL_DIRS, agent)
-    pending_root = (tool_root / "custom_pending").resolve()
-    approved_root = (tool_root / "custom_approved").resolve()
+    builtin_root = TOOL_DIRS[agent].resolve()
+    custom_root = CUSTOM_TOOL_DIRS[agent].resolve()
+
+    pending_root = custom_root / "custom_pending"
+    approved_root = custom_root / "custom_approved"
+
+    # Only AppData is writable.
     pending_root.mkdir(parents=True, exist_ok=True)
     approved_root.mkdir(parents=True, exist_ok=True)
 
     tools: list[ToolSummary] = []
-    for path in sorted(tool_root.rglob("*.py")):
-        if "__pycache__" in path.parts or path.name == "__init__.py":
-            continue
 
-        if pending_root in path.parents:
-            status: Literal["builtin", "approved", "pending_review"] = "pending_review"
-        elif approved_root in path.parents:
-            status = "approved"
-        else:
-            status = "builtin"
+    # --------------------------------------------------
+    # Built-ins: READ ONLY
+    # --------------------------------------------------
+    if builtin_root.exists():
+        for path in sorted(builtin_root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
 
+            if path.name == "__init__.py":
+                continue
+
+            # Never classify custom folders packaged accidentally
+            # as built-ins.
+            if "custom_pending" in path.parts:
+                continue
+
+            if "custom_approved" in path.parts:
+                continue
+
+            tools.extend(
+                _scan_tool_file(
+                    agent=agent,
+                    tool_root=builtin_root,
+                    path=path,
+                    status="builtin",
+                )
+            )
+
+    # --------------------------------------------------
+    # Approved custom tools: AppData
+    # --------------------------------------------------
+    for path in sorted(approved_root.glob("*.py")):
         matches = _scan_tool_file(
             agent=agent,
-            tool_root=tool_root,
+            tool_root=custom_root,
             path=path,
-            status=status,
+            status="approved",
         )
 
-        if status != "builtin":
-            # One custom file is one tool. Helpers must be private (_helper).
-            matches = [item for item in matches if item.name == path.stem]
-        tools.extend(matches)
+        tools.extend(
+            item
+            for item in matches
+            if item.name == path.stem
+        )
 
-    return sorted(tools, key=lambda item: (item.status, item.name, item.module))
+    # --------------------------------------------------
+    # Pending custom tools: AppData
+    # --------------------------------------------------
+    for path in sorted(pending_root.glob("*.py")):
+        matches = _scan_tool_file(
+            agent=agent,
+            tool_root=custom_root,
+            path=path,
+            status="pending_review",
+        )
+
+        tools.extend(
+            item
+            for item in matches
+            if item.name == path.stem
+        )
+
+    return sorted(
+        tools,
+        key=lambda item: (
+            item.status,
+            item.name,
+            item.module,
+        ),
+    )
+
 
 
 def _custom_tool_path(agent: AgentKind, name: str, *, status: Literal["pending_review", "approved"]) -> Path:
@@ -966,7 +1026,7 @@ def _custom_tool_path(agent: AgentKind, name: str, *, status: Literal["pending_r
     if not NAME_RE.fullmatch(normalized):
         raise HTTPException(status_code=400, detail="Invalid tool name.")
     
-    tool_root = _safe_agent_dir(TOOL_DIRS, agent)
+    tool_root = _safe_agent_dir(CUSTOM_TOOL_DIRS, agent)
     directory_name = "custom_pending" if status == "pending_review" else "custom_approved"
     directory = (tool_root / directory_name).resolve()
     directory.mkdir(parents=True, exist_ok=True)
