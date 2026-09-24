@@ -44,7 +44,7 @@ type SourceControlPageProps = {
   githubActionMessage: string | null;
   githubActionError: string | null;
   githubPullRequestUrl: string | null;
-  committableFileCount: number;
+  committablePaths: string[];
   lastCommit: {
     branch: string;
     commitSha: string;
@@ -53,7 +53,7 @@ type SourceControlPageProps = {
   onTestGitHubConnection: () => void;
   onCreateGitHubBranch: (branch: string) => void;
   onPullGitHubBranch: () => void;
-  onCommitGitHubChanges: (message: string) => Promise<boolean>;
+  onCommitGitHubChanges: (message: string, paths: string[]) => Promise<boolean>;
   onPushGitHubBranch: () => void;
   onCreateGitHubPullRequest: (request: {
     title: string;
@@ -72,9 +72,15 @@ const FieldLabel = ({ children }: { children: ReactNode }) => (
 const StatusList = ({
   title,
   paths,
+  selectedPaths,
+  approvedPaths,
+  onToggle,
 }: {
   title: string;
   paths: string[];
+  selectedPaths: Set<string>;
+  approvedPaths: Set<string>;
+  onToggle: (path: string) => void;
 }) => (
   <div className="rounded-lg border border-line bg-panel p-3">
     <div className="mb-2 flex items-center justify-between">
@@ -86,9 +92,11 @@ const StatusList = ({
     {paths.length > 0 ? (
       <div className="max-h-40 space-y-1 overflow-auto">
         {paths.map((path) => (
-          <div key={path} className="truncate font-mono text-[10px] text-muted" title={path}>
-            {path}
-          </div>
+          <label key={path} className="flex items-center gap-2 font-mono text-[10px] text-muted" title={path}>
+            <input type="checkbox" checked={selectedPaths.has(path)}
+              onChange={() => onToggle(path)} aria-label={`Include ${path} in commit`} />
+            <span className="truncate">{path}{approvedPaths.has(path) ? " (agent applied)" : ""}</span>
+          </label>
         ))}
       </div>
     ) : (
@@ -122,7 +130,7 @@ export const SourceControlPage = ({
   githubActionMessage,
   githubActionError,
   githubPullRequestUrl,
-  committableFileCount,
+  committablePaths,
   lastCommit,
   onTestGitHubConnection,
   onCreateGitHubBranch,
@@ -139,6 +147,8 @@ export const SourceControlPage = ({
   const sourceChangeGenerationRef = useRef(0);
   const [newBranch, setNewBranch] = useState("agent/");
   const [commitMessage, setCommitMessage] = useState("");
+  const [manualSelections, setManualSelections] = useState<string[]>([]);
+  const [excludedApprovals, setExcludedApprovals] = useState<string[]>([]);
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
   const [prBase, setPrBase] = useState(defaultBranch ?? "main");
@@ -166,6 +176,29 @@ export const SourceControlPage = ({
     setRepositorySource(committedRepositorySource);
   }, [committedRepositorySource]);
 
+  useEffect(() => {
+    setManualSelections([]);
+    setExcludedApprovals([]);
+  }, [selectedGitHubRepository, currentBranch]);
+
+  const changedPaths = new Set([
+    ...(githubRepositoryStatus?.staged_files ?? []),
+    ...(githubRepositoryStatus?.unstaged_files ?? []),
+    ...(githubRepositoryStatus?.untracked_files ?? []),
+  ]);
+  const approvedPaths = new Set(committablePaths);
+  const selectedPaths = new Set([
+    ...committablePaths.filter((path) => !excludedApprovals.includes(path)),
+    ...manualSelections.filter((path) => changedPaths.has(path)),
+  ]);
+  const toggleCommitPath = (path: string) => {
+    if (approvedPaths.has(path)) {
+      setExcludedApprovals((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]);
+    } else {
+      setManualSelections((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path]);
+    }
+  };
+
   const localRepoName = useMemo(
     () => localRepoRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? "Select folder",
     [localRepoRoot],
@@ -183,7 +216,7 @@ export const SourceControlPage = ({
   // locked to avoid racing a branch/commit/push operation.
   const repositoryControlsLocked = busy && !repositoryImporting;
   const canPush = Boolean(repositoryPermissions?.push && selectedGitHubRepository);
-  const canCommit = canPush && committableFileCount > 0 && commitMessage.trim().length > 0;
+  const canCommit = canPush && selectedPaths.size > 0 && commitMessage.trim().length > 0;
   const canOpenPr = Boolean(
     canPush &&
       currentBranch &&
@@ -232,9 +265,11 @@ export const SourceControlPage = ({
   };
 
   const handleCommit = async () => {
-    const committed = await onCommitGitHubChanges(commitMessage.trim());
+    const committed = await onCommitGitHubChanges(commitMessage.trim(), [...selectedPaths]);
     if (committed) {
       setCommitMessage("");
+      setManualSelections([]);
+      setExcludedApprovals([]);
     }
   };
 
@@ -466,7 +501,7 @@ export const SourceControlPage = ({
                   <div>
                     <h2 className="text-sm font-semibold text-ink">Working tree</h2>
                     <p className="mt-1 text-[11px] text-muted">
-                      Only approved and applied agent files are eligible for the scoped commit action.
+                      Agent applied files are selected by default. Select any other files you reviewed before committing.
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -503,9 +538,9 @@ export const SourceControlPage = ({
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-3">
-                  <StatusList title="Staged" paths={githubRepositoryStatus?.staged_files ?? []} />
-                  <StatusList title="Unstaged" paths={githubRepositoryStatus?.unstaged_files ?? []} />
-                  <StatusList title="Untracked" paths={githubRepositoryStatus?.untracked_files ?? []} />
+                  <StatusList title="Staged" paths={githubRepositoryStatus?.staged_files ?? []} selectedPaths={selectedPaths} approvedPaths={approvedPaths} onToggle={toggleCommitPath} />
+                  <StatusList title="Unstaged" paths={githubRepositoryStatus?.unstaged_files ?? []} selectedPaths={selectedPaths} approvedPaths={approvedPaths} onToggle={toggleCommitPath} />
+                  <StatusList title="Untracked" paths={githubRepositoryStatus?.untracked_files ?? []} selectedPaths={selectedPaths} approvedPaths={approvedPaths} onToggle={toggleCommitPath} />
                 </div>
 
                 {lastCommit && lastCommitVisible ? (
@@ -550,7 +585,7 @@ export const SourceControlPage = ({
                     ) : (
                       <GitCommitHorizontal size={12} />
                     )}
-                    Commit {committableFileCount} file{committableFileCount === 1 ? "" : "s"}
+                    Commit {selectedPaths.size} file{selectedPaths.size === 1 ? "" : "s"}
                   </button>
                 </div>
               </div>

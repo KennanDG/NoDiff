@@ -90,11 +90,12 @@ def build_chat_model(
     temperature: float | None = None,
     max_tokens: int | None = None,
     prompt_cache_namespace: str | None = None,
+    timeout_seconds: int | None = None,
 ) -> BaseChatModel:
     api_key = _require_api_key(provider)
     optional: dict[str, Any] = {
         "max_retries": 1,
-        "timeout": coding_settings.model_timeout_seconds,
+        "timeout": timeout_seconds or coding_settings.model_timeout_seconds,
     }
 
     # Current Claude reasoning models can reject non-default sampling parameters.

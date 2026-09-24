@@ -1046,13 +1046,6 @@ class GitHubService:
         self._assert_push_permission(full_name)
         branch = self._current_branch(repo_root)
         self._assert_safe_publish_branch(full_name, branch)
-        staged, unstaged, untracked = self._changed_files(repo_root)
-        if staged or unstaged or untracked:
-            raise HTTPException(
-                status_code=409,
-                detail="Commit all intended changes before pushing the branch.",
-            )
-
         with IMPORT_LOCK:
             fetch = self._run_git(
                 ["fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"],

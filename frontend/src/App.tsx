@@ -643,7 +643,8 @@ const App = () => {
       ...githubRepositoryStatus.unstaged_files,
       ...githubRepositoryStatus.untracked_files,
     ]);
-    return [...new Set(run.appliedFiles)].filter((path) => changedPaths.has(path));
+    const approvedPaths = new Set(run.appliedFiles.map((path) => path.replaceAll("\\", "/").replace(/^\.\//, "")));
+    return [...changedPaths].filter((path) => approvedPaths.has(path.replaceAll("\\", "/").replace(/^\.\//, "")));
   }, [githubRepositoryStatus, run.appliedFiles]);
   const effectiveWorkspaceRoot =
     repoRoot === configuredRepoRoot && configuredWorkspaceRoot !== configuredRepoRoot
@@ -957,10 +958,10 @@ const App = () => {
     }
   }, [loadGitHubRepositoryStatus, loadRepository, repoRoot, selectedGitHubRepository]);
 
-  const commitAppliedGitHubChanges = useCallback(async (message: string) => {
+  const commitAppliedGitHubChanges = useCallback(async (message: string, selectedPaths: string[]) => {
     if (!selectedGitHubRepository) return false;
-    if (committablePaths.length === 0) {
-      setGitHubActionError("No approved and applied agent files are currently available to commit.");
+    if (selectedPaths.length === 0) {
+      setGitHubActionError("Select at least one changed file to commit.");
       return false;
     }
     setGitHubActionLoading("commit");
@@ -971,7 +972,7 @@ const App = () => {
         apiKey,
         fullName: selectedGitHubRepository,
         message,
-        paths: committablePaths,
+        paths: selectedPaths,
       });
       setLastGitHubCommit({
         branch: result.branch,
@@ -988,7 +989,7 @@ const App = () => {
     } finally {
       setGitHubActionLoading(null);
     }
-  }, [committablePaths, loadGitHubRepositoryStatus, loadRepository, repoRoot, selectedGitHubRepository]);
+  }, [loadGitHubRepositoryStatus, loadRepository, repoRoot, selectedGitHubRepository]);
 
   const pushCurrentGitHubBranch = useCallback(async () => {
     if (!selectedGitHubRepository) return;
@@ -1539,7 +1540,7 @@ const App = () => {
           githubActionMessage={githubActionMessage}
           githubActionError={githubActionError}
           githubPullRequestUrl={githubPullRequestUrl}
-          committableFileCount={committablePaths.length}
+          committablePaths={committablePaths}
           lastCommit={lastGitHubCommit}
           onTestGitHubConnection={testSelectedGitHubConnection}
           onCreateGitHubBranch={createAgentBranch}
