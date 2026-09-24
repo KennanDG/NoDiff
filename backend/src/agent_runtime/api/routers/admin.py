@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, Query
 
-from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
+from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools, custom_skill_dir
 from agent_runtime.agents.coding.coding_tool_registry import (
     CODING_TOOLS_DIR,
     CODING_CUSTOM_TOOLS_DIR,
