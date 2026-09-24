@@ -223,8 +223,7 @@ export const SourceControlPage = ({
       prBase &&
       currentBranch !== prBase &&
       prTitle.trim() &&
-      githubRepositoryStatus &&
-      !githubRepositoryStatus.dirty,
+      githubRepositoryStatus,
   );
 
   const handleRepositorySourceChange = async (value: string) => {

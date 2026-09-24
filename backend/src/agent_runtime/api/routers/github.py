@@ -1113,13 +1113,6 @@ class GitHubService:
             )
         if head == base:
             raise HTTPException(status_code=409, detail="Pull request head and base branches must differ.")
-        staged, unstaged, untracked = self._changed_files(repo_root)
-        if staged or unstaged or untracked:
-            raise HTTPException(
-                status_code=409,
-                detail="Commit or discard local changes before creating a pull request.",
-            )
-
         self._assert_push_permission(full_name)
         remote_head = self._run_git(
             ["ls-remote", "--exit-code", "--heads", "origin", head],
@@ -1131,6 +1124,10 @@ class GitHubService:
                 status_code=409,
                 detail=f"Push branch '{head}' before creating a pull request.",
             )
+        local_head = self._run_git(["rev-parse", "HEAD"], cwd=repo_root).stdout.strip()
+        remote_sha = remote_head.stdout.strip().split()[0]
+        if remote_sha != local_head:
+            raise HTTPException(status_code=409, detail="Push the latest branch commit before creating a pull request.")
 
         existing = self._request_json(
             f"/repos/{owner}/{name}/pulls",
