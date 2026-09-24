@@ -18,8 +18,8 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, Query
 
-from agent_runtime.agents.coding.skill_registry import SkillRegistry, custom_skill_dir, extract_allowed_tools
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
+from agent_runtime.agents.coding.coding_tool_registry import (
     CODING_TOOLS_DIR,
     CODING_CUSTOM_TOOLS_DIR,
     ApprovedCustomToolRegistry,
@@ -28,7 +28,7 @@ from agent_runtime.agents.coding.tool_registry import (
     validate_approved_custom_tool_source,
 )
 
-from agent_runtime.agents.voice.tool_registry import (
+from agent_runtime.agents.voice.voice_tool_registry import (
     VOICE_TOOLS_DIR,
     VOICE_CUSTOM_TOOLS_DIR,
     ApprovedCustomVoiceToolRegistry,
