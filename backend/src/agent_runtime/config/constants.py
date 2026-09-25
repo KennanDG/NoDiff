@@ -71,24 +71,71 @@ IMAGE_DATA_URL_RE = re.compile(
     re.IGNORECASE,
 )
 LANGUAGE_BY_EXTENSION = {
-    ".css": "css",
-    ".html": "html",
+    ".py": "python",
+
     ".js": "javascript",
     ".jsx": "javascript",
-    ".json": "json",
-    ".md": "markdown",
-    ".py": "python",
-    ".sql": "sql",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+
     ".ts": "typescript",
     ".tsx": "typescript",
-    # ".txt": "plaintext",
+
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+
+    ".json": "json",
+    ".jsonc": "json",
+
+    ".md": "markdown",
+    ".mdx": "markdown",
+
+    ".sql": "sql",
+
     ".toml": "toml",
     ".yml": "yaml",
     ".yaml": "yaml",
+
+    ".xml": "xml",
+    ".ini": "ini",
+
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+
+    ".ps1": "powershell",
+    ".psm1": "powershell",
+    ".psd1": "powershell",
+
+    ".bat": "batch",
+    ".cmd": "batch",
+
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
     ".cpp": "cpp",
+    ".cxx": "cpp",
     ".hpp": "cpp",
-    ".rs": "rust",
+
+    ".cs": "csharp",
     ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".go": "go",
+    ".rs": "rust",
+    ".swift": "swift",
+
+    ".rb": "ruby",
+    ".php": "php",
+
+    ".tf": "terraform",
+    ".hcl": "hcl",
+
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".proto": "protobuf",
 }
 
 

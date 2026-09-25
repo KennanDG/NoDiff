@@ -111,6 +111,55 @@ SHELL_CONTROL_TOKENS = {
 }
 
 
+
+RESOLVED_PYTHON_VALIDATION_PREFIXES = (
+    ("-m", "pytest"),
+    ("-m", "ruff"),
+    ("-m", "compileall"),
+    ("-m", "py_compile"),
+)
+
+RESOLVED_UV_VALIDATION_PREFIXES = (
+    ("run", "pytest"),
+    ("run", "ruff"),
+    ("run", "python", "-m", "pytest"),
+    ("run", "python", "-m", "ruff"),
+    ("run", "python", "-m", "compileall"),
+    ("run", "python", "-m", "py_compile"),
+)
+
+
+def _is_allowed_resolved_validation_tokens(
+    tokens: list[str],
+    trusted_prefix: tuple[str, ...],
+) -> bool:
+    if not tokens or not trusted_prefix:
+        return False
+
+    if tuple(tokens[: len(trusted_prefix)]) != trusted_prefix:
+        return False
+
+    executable = Path(trusted_prefix[0])
+
+    if not executable.is_absolute() or not executable.is_file():
+        return False
+
+    remaining = tokens[len(trusted_prefix):]
+
+    executable_name = executable.name.lower()
+
+    allowed_prefixes = (
+        RESOLVED_UV_VALIDATION_PREFIXES
+        if executable_name in {"uv", "uv.exe"}
+        else RESOLVED_PYTHON_VALIDATION_PREFIXES
+    )
+
+    return any(
+        _starts_with_tokens(remaining, prefix)
+        for prefix in allowed_prefixes
+    )
+
+
 def _command_tokens(command: str) -> list[str]:
     try:
         return shlex.split(command)
@@ -183,18 +232,46 @@ def _resolve_working_directory(repo_root: Path, cwd_fragment: str | None) -> Pat
     return resolved
 
 
-def run_command(repo_root: Path, command: str, timeout_seconds: int = 60) -> dict[str, object]:
+def run_command(
+    repo_root: Path,
+    command: str,
+    timeout_seconds: int = 60,
+    *,
+    resolved_tokens: list[str] | None = None,
+    trusted_prefix: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    
     original_command = command
-    tokens = _command_tokens(command)
-    tokens, cwd_fragment = _strip_safe_cd_prefix(tokens)
+    cwd_fragment: str | None = None
 
-    if not tokens or not _is_allowed_tokens(tokens):
-        return {
-            "command": original_command,
-            "returncode": 126,
-            "stdout": "",
-            "stderr": "Command blocked by coding-agent allowlist.",
-        }
+    if resolved_tokens is not None:
+        tokens = list(resolved_tokens)
+
+        if (
+            trusted_prefix is None
+            or not _is_allowed_resolved_validation_tokens(
+                tokens,
+                trusted_prefix,
+            )
+        ):
+            return {
+                "command": original_command,
+                "returncode": 126,
+                "stdout": "",
+                "stderr": "Resolved validation command failed trusted-runtime validation.",
+            }
+
+    else:
+        tokens = _command_tokens(command)
+        tokens, cwd_fragment = _strip_safe_cd_prefix(tokens)
+
+        if not tokens or not _is_allowed_tokens(tokens):
+            return {
+                "command": original_command,
+                "returncode": 126,
+                "stdout": "",
+                "stderr": "Command blocked by coding-agent allowlist.",
+            }
 
     process = None
     started = time.monotonic()

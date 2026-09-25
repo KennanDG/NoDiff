@@ -14,8 +14,8 @@ def default_validation_profile(repo_root: Path) -> list[ValidationCommand]:
 
     if has_pyproject(repo_root):
         return [
-            ValidationCommand("uv run pytest", "Run the Python test suite."),
-            ValidationCommand("uv run ruff check .", "Run Python lint checks."),
+            ValidationCommand("pytest", "Run the Python test suite."),
+            ValidationCommand("ruff check .", "Run Python lint checks."),
         ]
 
     return [

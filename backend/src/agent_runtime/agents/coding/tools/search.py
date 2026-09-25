@@ -260,7 +260,22 @@ class RepoSearchService:
 
 
     def _text_file_allowed(self, path: Path) -> bool:
-        return self._suffix(path) in TEXT_SUFFIXES
+        if self._suffix(path) in TEXT_SUFFIXES:
+            return True
+
+        try:
+            sample = path.read_bytes()[:8192]
+        except OSError:
+            return False
+
+        if b"\x00" in sample:
+            return False
+
+        try:
+            sample.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
 
 
     def _suffix(self, path: Path) -> str:

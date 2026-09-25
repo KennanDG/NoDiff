@@ -95,20 +95,91 @@ STOPWORDS = {
 
 
 TEXT_SUFFIXES = {
+    # Python
     ".py",
-    ".md",
-    ".txt",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".json",
+
+    # JavaScript / TypeScript
     ".js",
     ".jsx",
     ".ts",
     ".tsx",
-    ".sql",
+    ".mjs",
+    ".cjs",
+
+    # Web
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".vue",
+    ".svelte",
+
+    # Shell / scripting
     ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".ps1",
+    ".psm1",
+    ".psd1",
+    ".bat",
+    ".cmd",
+
+    # Data / configuration
+    ".json",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".xml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".properties",
+
+    # Documentation
+    ".md",
+    ".mdx",
+    ".txt",
+    ".rst",
+
+    # Database
+    ".sql",
+
+    # Compiled languages
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hpp",
+    ".cs",
+    ".java",
+    ".kt",
+    ".kts",
+    ".go",
+    ".rs",
+    ".swift",
+
+    # Other common development files
+    ".rb",
+    ".php",
+    ".lua",
+    ".r",
+    ".scala",
+    ".dart",
+
+    # Infrastructure / schemas
     ".tf",
+    ".tfvars",
+    ".hcl",
+    ".graphql",
+    ".gql",
+    ".proto",
+
+    # Special filenames normalized by the search service
     ".dockerfile",
 }
 
