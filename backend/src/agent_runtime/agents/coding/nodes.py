@@ -26,7 +26,7 @@ from agent_runtime.agents.coding.prompts import (
 
 from agent_runtime.agents.coding.skill_registry import MAX_SELECTED_SKILLS, SkillRegistry
 from agent_runtime.agents.coding.model_factory import build_chat_model
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.coding_tool_registry import (
     ApprovedCustomToolRegistry,
     MAX_CUSTOM_TOOL_CALLS,
 )
@@ -339,10 +339,6 @@ def _explicit_request_paths(state: CodingAgentState) -> list[str]:
         if not candidate:
             continue
 
-        # A bare filename repeated in prose is weaker evidence than an exact repo
-        # attachment path. This also prevents ambiguous names such as tool_registry.py
-        # from generating a false resolution error when both coding/voice versions
-        # were already attached canonically.
         if "/" not in candidate and Path(candidate).name in attachment_basenames:
             continue
         request_paths.append(candidate)

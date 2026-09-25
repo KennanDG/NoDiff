@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.coding_tool_registry import (
     CustomToolValidationError,
     validate_approved_custom_tool_source,
 )

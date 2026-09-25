@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_runtime.agents.voice.prompts import VOICE_INTAKE_SYSTEM_PROMPT
 from agent_runtime.agents.coding.skill_registry import SkillRegistry
-from agent_runtime.agents.voice.tool_registry import (
+from agent_runtime.agents.voice.voice_tool_registry import (
     ApprovedCustomVoiceToolRegistry,
     MAX_VOICE_CUSTOM_TOOL_CALLS,
     MAX_VOICE_CUSTOM_TOOL_TOTAL_CHARS,

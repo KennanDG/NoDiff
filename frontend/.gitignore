@@ -6,3 +6,4 @@ release-store
 *.local
 *.log
 NoDiff-MSIX-Dev.cer
+Build-NoDiff-MSIX.ps1

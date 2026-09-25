@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.coding_tool_registry import (
     ApprovedToolRegistry,
     CustomToolValidationError,
     validate_approved_custom_tool_source,
