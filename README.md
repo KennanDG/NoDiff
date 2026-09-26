@@ -2,23 +2,18 @@
 
 NoDiff is a desktop coding and voice assistant built with Electron, React, TypeScript, FastAPI, and LangGraph. It turns a request into a repository-aware plan, proposes changes through bounded implementation workers, runs validation, and lets you review and approve files before applying them to your repository.
 
-**Status: developer preview.** The `dev` branch includes the live desktop interface, Python sidecar lifecycle, local SQLite memory, GitHub integration, and Windows x64 NSIS/MSIX packaging. Packaging configuration does not imply a signed release or a published Microsoft Store app. See the [Windows build guide](frontend/README.md#windows-packaging) for prerequisites and remaining distribution work.
-
-- [Desktop development and packaging](frontend/README.md)
-- [Backend configuration, API, memory, and CLI](backend/README.md)
-
 ## Current capabilities
 
-| Area | Implemented behavior |
-| --- | --- |
-| Workspace | Native local-folder picker, restoration of the last valid local folder, repository tree, file previews, and attached text files or images |
-| Coding | Repository search, multi-skill routing, planning, dependency-aware implementation units, bounded concurrent workers, reconciliation, validation, and repair iterations |
-| Review | Streamed progress and reports, Monaco diffs, dry runs, and approval or rejection of staged files |
-| Voice | Audio transcription, conversational clarification, repository/attachment context, optional speech output, and handoff to the coding agent |
-| Source control | GitHub repository discovery/import, managed checkouts, branch selection/creation, status, pull, commit, push, and pull-request creation |
-| Settings | Provider/model selection, live model discovery with fallback catalogs, execution budgets, and credentials for providers, GitHub, and SerpApi |
-| Skills and tools | Built-in coding/voice resources, custom Markdown skills, AI-generated drafts, and custom Python tool review, approval, editing, and deletion |
-| Persistence | Local graph checkpoints, repository-scoped durable memory, retention/deduplication, saved settings, and encrypted desktop credential storage |
+| Area             | Implemented behavior                                                                                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace        | Native local-folder picker, restoration of the last valid local folder, repository tree, file previews, and attached text files or images                              |
+| Coding           | Repository search, multi-skill routing, planning, dependency-aware implementation units, bounded concurrent workers, reconciliation, validation, and repair iterations |
+| Review           | Streamed progress and reports, code editor diffs, dry runs, and approval or rejection of staged files                                                                 |
+| Voice            | Audio transcription, conversational clarification, repository/attachment context, optional speech output, and handoff to the coding agent                              |
+| Source control   | GitHub repository discovery/import, managed checkouts, branch selection/creation, status, pull, commit, push, and pull-request creation                                |
+| Settings         | Provider/model selection, live model discovery with fallback catalogs, execution budgets, and credentials for providers, GitHub, and SerpApi                           |
+| Skills and tools | Built-in coding/voice resources, custom Markdown skills, AI-generated drafts, and custom Python tool review, approval, editing, and deletion                           |
+| Persistence      | Local graph checkpoints, repository-scoped durable memory, retention/deduplication, saved settings, and encrypted desktop credential storage                           |
 
 ### File types and validation
 
@@ -38,7 +33,7 @@ The patch pipeline does not generate binary assets. Protected paths, dependency 
 For Windows development, run Node, Electron, `uv`, and Python in the same native Windows environment so repository paths match. Windows x64 is the configured packaged target.
 
 ```powershell
-git clone --branch dev https://github.com/KennanDG/NoDiff.git
+git clone https://github.com/KennanDG/NoDiff.git
 cd NoDiff/backend
 uv sync --frozen
 cd ../frontend
@@ -77,13 +72,13 @@ This workspace copy is not an operating-system security sandbox. Validation comm
 
 ## Providers and configuration
 
-| Model slot | Providers supported by the configuration |
-| --- | --- |
+| Model slot           | Providers supported by the configuration              |
+| -------------------- | ----------------------------------------------------- |
 | Coding and reasoning | Groq, DeepSeek, OpenRouter, OpenAI, Anthropic, Google |
-| Vision/captioning | Groq, OpenRouter, OpenAI, Anthropic, Google |
-| Voice chat | Groq, DeepSeek, OpenRouter, OpenAI, Anthropic, Google |
-| Speech-to-text | Groq, OpenAI |
-| Text-to-speech | Groq, OpenAI |
+| Vision/captioning    | Groq, OpenRouter, OpenAI, Anthropic, Google           |
+| Voice chat           | Groq, DeepSeek, OpenRouter, OpenAI, Anthropic, Google |
+| Speech-to-text       | Groq, OpenAI                                          |
+| Text-to-speech       | Groq, OpenAI                                          |
 
 Agent Settings exposes model IDs, provider catalogs, worker/iteration limits, and token/context budgets. Actual model availability depends on the provider account; configuration support is not a guarantee that a particular model is available. Built-in web search uses `SERPAPI_API_KEY`.
 
@@ -95,25 +90,25 @@ The current FastAPI entrypoint explicitly disables LangSmith tracing, including 
 
 The desktop uses one writable runtime root, separate from the installation and selected repository:
 
-| Platform | Default runtime root |
-| --- | --- |
-| Windows | `%APPDATA%\NoDiff\agent-runtime` |
+| Platform                 | Default runtime root                                   |
+| ------------------------ | ------------------------------------------------------ |
+| Windows                  | `%APPDATA%\NoDiff\agent-runtime`                     |
 | macOS source development | `~/Library/Application Support/NoDiff/agent-runtime` |
 | Linux source development | `${XDG_CONFIG_HOME:-~/.config}/NoDiff/agent-runtime` |
 
 Set `AGENT_RUNTIME_DATA_DIR` before launching Electron to choose another root. Agent Settings displays the resolved directory; Windows package virtualization can affect its physical location.
 
-| Path under the desktop runtime root | Contents |
-| --- | --- |
-| `runtime-agent-config.json` | Non-secret provider/model selections |
-| `runtime-agent-config-coding-runtime.json` | Coding execution limits and budgets |
-| `runtime-secrets.json` | Encrypted desktop credentials |
-| `local-repository-session.json` | Last valid local repository |
-| `github-workspaces/` | Managed GitHub checkouts |
+| Path under the desktop runtime root                         | Contents                                          |
+| ----------------------------------------------------------- | ------------------------------------------------- |
+| `runtime-agent-config.json`                               | Non-secret provider/model selections              |
+| `runtime-agent-config-coding-runtime.json`                | Coding execution limits and budgets               |
+| `runtime-secrets.json`                                    | Encrypted desktop credentials                     |
+| `local-repository-session.json`                           | Last valid local repository                       |
+| `github-workspaces/`                                      | Managed GitHub checkouts                          |
 | `memory/checkpoints.sqlite3` and `memory/store.sqlite3` | Graph checkpoints and durable repository memories |
 | `memory/fastembed-cache/` and `memory/maintenance.json` | Local embedding model cache and maintenance state |
-| `agents/coding/` and `agents/voice/` | Custom skills and pending/approved tools |
-| `logs/` | Backend and desktop diagnostics |
+| `agents/coding/` and `agents/voice/`                    | Custom skills and pending/approved tools          |
+| `logs/`                                                   | Backend and desktop diagnostics                   |
 
 Memory uses SQLite and FastEmbed, with `BAAI/bge-small-en-v1.5` as the default 384-dimensional embedding model. It does not require Postgres or a hosted vector database. Retention, duplicate consolidation, checkpoint pruning, and periodic SQLite compaction are implemented; details are in the [backend guide](backend/README.md#memory-and-diagnostics).
 
@@ -134,23 +129,6 @@ Coding and voice agents load bundled Markdown skills and custom overlays from wr
 Custom Python tools enter `custom_pending` for review and move to `custom_approved` after validation and approval. The current validator checks Python syntax and a compatible synchronous entry function. Standard-library imports, installed third-party packages, existing NoDiff tools, and helper functions/classes are supported. Powerful operations and import-time execution produce review warnings rather than blanket source-policy rejection.
 
 Approved tools execute in the backend process. Their dependencies must exist in that runtime; the packaged app does not install arbitrary new packages when a tool is approved. The [backend guide](backend/README.md#skills-and-tool-contract) describes the callable contract and storage paths.
-
-## Windows packaging
-
-Run these commands from `frontend/` on Windows after source dependencies are installed:
-
-| Command | Result |
-| --- | --- |
-| `npm run backend:build:windows` | PyInstaller sidecar in `backend/dist/nodiff-agent-runtime/` |
-| `npm run desktop:build:windows` | Sidecar + renderer build + x64 NSIS installer in `frontend/release/` |
-| `npm run desktop:build` | Alias for the Windows NSIS build |
-| `npm run desktop:build:store` | Sidecar + renderer build + x64 MSIX package in `frontend/release-store/` |
-
-**Fresh-clone prerequisite:** both Windows configurations reference `frontend/build/icon.ico`, which is not tracked and is covered by the current `build/` ignore rule. Supply that file before packaging. MSIX additionally requires the Partner Center identity environment variables described in the [frontend README](frontend/README.md#microsoft-store-msix).
-
-The sidecar spec includes provider packages, SQLite native resources, and physical coding/voice skill and tool files. Electron launches the bundled executable, performs a health check, reports startup diagnostics, and stops the sidecar on exit. The installed app bundles its own Python runtime; Git and the toolchains needed to validate a user's project remain separate requirements.
-
-The [Windows package workflow](.github/workflows/windows-package.yml) builds NSIS artifacts on manual dispatch and matching pull requests and retains artifacts for 14 days. It is an artifact build, not a release publishing or Store-submission workflow. Signing, clean-machine/upgrade verification, Store submission, and an update channel still need a release process. macOS/Linux packaged sidecars are not configured.
 
 ## Development checks
 
@@ -174,16 +152,16 @@ These are contributor check commands, not a claim that every check currently pas
 
 ## Repository layout
 
-| Path | Purpose |
-| --- | --- |
-| [`backend/src/agent_runtime/api/`](backend/src/agent_runtime/api/) | FastAPI entrypoint, authentication, schemas, and routers |
+| Path                                                                                    | Purpose                                                                    |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [`backend/src/agent_runtime/api/`](backend/src/agent_runtime/api/)                     | FastAPI entrypoint, authentication, schemas, and routers                   |
 | [`backend/src/agent_runtime/agents/coding/`](backend/src/agent_runtime/agents/coding/) | Coding graph, workers, patching, validation, skills/tools, memory, and CLI |
-| [`backend/src/agent_runtime/agents/voice/`](backend/src/agent_runtime/agents/voice/) | Voice graph, provider clients, intake, and tools |
-| [`backend/src/agent_runtime/config/`](backend/src/agent_runtime/config/) | Settings, provider catalogs, paths, and tracing bootstrap |
-| [`backend/nodiff-agent-runtime.spec`](backend/nodiff-agent-runtime.spec) | Windows PyInstaller sidecar definition |
-| [`frontend/src/`](frontend/src/) | React workspace and typed API/WebSocket clients |
-| [`frontend/electron/`](frontend/electron/) | Active desktop main process and preload bridge |
-| [`frontend/electron-builder.store.cjs`](frontend/electron-builder.store.cjs) | MSIX identity and packaging configuration |
+| [`backend/src/agent_runtime/agents/voice/`](backend/src/agent_runtime/agents/voice/)   | Voice graph, provider clients, intake, and tools                           |
+| [`backend/src/agent_runtime/config/`](backend/src/agent_runtime/config/)               | Settings, provider catalogs, paths, and tracing bootstrap                  |
+| [`backend/nodiff-agent-runtime.spec`](backend/nodiff-agent-runtime.spec)               | Windows PyInstaller sidecar definition                                     |
+| [`frontend/src/`](frontend/src/)                                                       | React workspace and typed API/WebSocket clients                            |
+| [`frontend/electron/`](frontend/electron/)                                             | Active desktop main process and preload bridge                             |
+| [`frontend/electron-builder.store.cjs`](frontend/electron-builder.store.cjs)           | MSIX identity and packaging configuration                                  |
 
 The public product name is **NoDiff**; the Python import package remains `agent_runtime` and the internal npm package name remains `coding-agent-desktop`.
 
