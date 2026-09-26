@@ -67,6 +67,7 @@ module.exports = {
     languages: ["en-US"],
     backgroundColor: "#090B10",
     minVersion: "10.0.17763.0",
+    createMsixupload: true,
     artifactName: "NoDiff-${version}-${arch}.${ext}",
   },
 };
