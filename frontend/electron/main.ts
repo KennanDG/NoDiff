@@ -1,10 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   statSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -37,6 +39,20 @@ const runtimeDataDirectory = configuredRuntimeDataDirectory
   ? path.resolve(configuredRuntimeDataDirectory)
   : path.join(applicationDataDirectory, "agent-runtime");
 const memoryDirectory = path.join(runtimeDataDirectory, "memory");
+
+function logDesktopApi(message: string) {
+  try {
+    const directory = path.join(runtimeDataDirectory, "logs");
+    mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, "desktop-api.log");
+    if (existsSync(file) && statSync(file).size > 2_000_000) {
+      renameSync(file, path.join(directory, "desktop-api.previous.log"));
+    }
+    appendFileSync(file, `${new Date().toISOString()} ${redactRuntimeSecrets(message)}\n`, "utf8");
+  } catch (error) {
+    console.error("Unable to write desktop API diagnostic log", error);
+  }
+}
 
 const PERSISTENT_SECRET_ENV_KEYS = new Set([
   "GROQ_API_KEY",
@@ -653,6 +669,9 @@ function registerDesktopIpc() {
         console.log(
           `[desktop-api:${requestId}] <- ${response.status} ${method} ${target.pathname} ${Date.now() - startedAt}ms`,
         );
+        if (!response.ok || Date.now() - startedAt >= 10_000) {
+          logDesktopApi(`${requestId} ${method} ${target.pathname} -> ${response.status} ${Date.now() - startedAt}ms backend-request=${response.headers.get("x-request-id") ?? "none"}`);
+        }
 
         return {
           status: response.status,
@@ -662,6 +681,7 @@ function registerDesktopIpc() {
           body,
         };
       } catch (error) {
+        logDesktopApi(`${requestId} ${method} ${target.pathname} failed after ${Date.now() - startedAt}ms: ${String(error)}`);
         console.error(
           `[desktop-api:${requestId}] !! ${method} ${target.pathname} failed after ${Date.now() - startedAt}ms`,
           error,

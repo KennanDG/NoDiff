@@ -39,6 +39,7 @@ module.exports = {
     {
       from: "../backend/dist/nodiff-agent-runtime",
       to: "backend/nodiff-agent-runtime",
+      filter: ["**/*"],
     },
   ],
   directories: {
@@ -66,6 +67,7 @@ module.exports = {
     languages: ["en-US"],
     backgroundColor: "#090B10",
     minVersion: "10.0.17763.0",
+    createMsixupload: true,
     artifactName: "NoDiff-${version}-${arch}.${ext}",
   },
 };

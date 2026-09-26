@@ -26,7 +26,7 @@ from agent_runtime.agents.coding.prompts import (
 
 from agent_runtime.agents.coding.skill_registry import MAX_SELECTED_SKILLS, SkillRegistry
 from agent_runtime.agents.coding.model_factory import build_chat_model
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.coding_tool_registry import (
     ApprovedCustomToolRegistry,
     MAX_CUSTOM_TOOL_CALLS,
 )
@@ -339,10 +339,6 @@ def _explicit_request_paths(state: CodingAgentState) -> list[str]:
         if not candidate:
             continue
 
-        # A bare filename repeated in prose is weaker evidence than an exact repo
-        # attachment path. This also prevents ambiguous names such as tool_registry.py
-        # from generating a false resolution error when both coding/voice versions
-        # were already attached canonically.
         if "/" not in candidate and Path(candidate).name in attachment_basenames:
             continue
         request_paths.append(candidate)
@@ -1257,8 +1253,13 @@ _VALIDATION_INFRA_MARKERS = (
     "timed out",
     "timeout",
     "validation harness failed",
+    "validation runtime unavailable",
     "executable file not found",
     "is not recognized as an internal or external command",
+    "no module named pytest",
+    "no module named 'pytest'",
+    "no module named ruff",
+    "no module named 'ruff'",
 )
 
 
@@ -1291,8 +1292,10 @@ def validate_node(
     ]
 
     try:
+        runtime_root = Path(state.get("original_repo_root") or repo_root).expanduser().resolve()
         suite = run_validation_suite(
             repo_root,
+            runtime_root=runtime_root,
             changed_files=changed_files,
             requested_commands=commands,
             allow_shell=cfg.allow_shell,
@@ -1369,6 +1372,22 @@ def report_node(state: CodingAgentState) -> CodingAgentState:
     ]
     patch_summary = str(state.get("patch_summary", "")).strip()
     validation_results = state.get("validation_results", [])
+
+    selected_skills = [
+        str(skill).strip()
+        for skill in state.get("selected_skills", [])
+        if str(skill).strip()
+    ]
+
+    # Backward compatibility with older checkpoints/runs that only populated
+    # the legacy scalar selected_skill field.
+    if not selected_skills:
+        selected_skill = str(state.get("selected_skill", "")).strip()
+        if selected_skill:
+            selected_skills = [selected_skill]
+
+    selected_skills = dedupe(selected_skills)
+
     all_errors = dedupe(
         [
             str(item).strip()
@@ -1413,6 +1432,10 @@ def report_node(state: CodingAgentState) -> CodingAgentState:
         summary = "The run completed without proposing repository changes."
 
     lines = ["## Summary", "", summary]
+
+    if selected_skills:
+        lines.extend(["", "## Skills Used", ""])
+        lines.extend(f"- `{skill}`" for skill in selected_skills)
 
     if file_changes:
         lines.extend(["", "## Changes", ""])

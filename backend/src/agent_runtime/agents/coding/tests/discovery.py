@@ -69,7 +69,7 @@ def discover_targeted_tests(repo_root: Path, changed_files: list[str]) -> list[V
         if "tests" in path.parts and path.name.startswith("test_"):
             commands.append(
                 ValidationCommand(
-                    f"uv run pytest {changed_file}",
+                    f"pytest {changed_file}"
                     f"Run changed test file {changed_file}.",
                 )
             )
@@ -84,7 +84,7 @@ def discover_targeted_tests(repo_root: Path, changed_files: list[str]) -> list[V
             if (repo_root / candidate).exists():
                 commands.append(
                     ValidationCommand(
-                        f"uv run pytest {candidate.as_posix()}",
+                        f"pytest {candidate.as_posix()}"
                         f"Run likely related test file for {changed_file}.",
                     )
                 )

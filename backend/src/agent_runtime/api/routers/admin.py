@@ -7,6 +7,7 @@ import time
 import re
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Literal
@@ -17,16 +18,19 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, Query
 
-from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools
-from agent_runtime.agents.coding.tool_registry import (
+from agent_runtime.agents.coding.skill_registry import SkillRegistry, extract_allowed_tools, custom_skill_dir
+from agent_runtime.agents.coding.coding_tool_registry import (
     CODING_TOOLS_DIR,
+    CODING_CUSTOM_TOOLS_DIR,
     ApprovedCustomToolRegistry,
     CustomToolValidationError,
     review_custom_tool_source,
     validate_approved_custom_tool_source,
 )
-from agent_runtime.agents.voice.tool_registry import (
+
+from agent_runtime.agents.voice.voice_tool_registry import (
     VOICE_TOOLS_DIR,
+    VOICE_CUSTOM_TOOLS_DIR,
     ApprovedCustomVoiceToolRegistry,
     validate_voice_custom_tool_source,
 )
@@ -66,16 +70,23 @@ from agent_runtime.config.constants import (
 
 
 SKILL_DIRS: dict[AgentKind, Path] = {
-    # Use the same directory as the runtime SkillRegistry so custom skills saved
-    # from the UI are immediately visible to route_node on the next run.
+    # Packaged built-ins are read-only. SkillRegistry overlays writable custom skills.
     "coding": SkillRegistry().skills_dir.resolve(),
     "voice": VOICE_SKILLS_DIR.resolve(),
 }
+CUSTOM_SKILL_DIRS: dict[AgentKind, Path] = {
+    "coding": custom_skill_dir("coding"),
+    "voice": custom_skill_dir("voice"),
+}
+
 TOOL_DIRS: dict[AgentKind, Path] = {
-    # Resolve coding tools from the importable agent_runtime package itself. This avoids
-    # accidentally creating src/agents/coding/tools beside src/agent_runtime/... .
     "coding": CODING_TOOLS_DIR,
-    "voice": VOICE_TOOLS_DIR.resolve(),
+    "voice": VOICE_TOOLS_DIR,
+}
+
+CUSTOM_TOOL_DIRS: dict[AgentKind, Path] = {
+    "coding": CODING_CUSTOM_TOOLS_DIR,
+    "voice": VOICE_CUSTOM_TOOLS_DIR,
 }
 
 
@@ -213,15 +224,25 @@ def _migrate_legacy_coding_assets() -> None:
     """Move custom assets created under the old src/agents/... root into agent_runtime."""
 
     legacy_skill_root = (AGENT_RUNTIME_ROOT / "agents" / "coding" / "skills").resolve()
-    canonical_skill_root = SKILL_DIRS["coding"].resolve()
+    canonical_skill_root = CUSTOM_SKILL_DIRS["coding"].resolve()
 
     if legacy_skill_root != canonical_skill_root and legacy_skill_root.exists():
         canonical_skill_root.mkdir(parents=True, exist_ok=True)
 
         for source in legacy_skill_root.glob("custom_*.md"):
             target = canonical_skill_root / source.name
-            if not target.exists():
-                os.replace(source, target)
+            if not target.exists() and not target.with_suffix(".deleted").exists():
+                shutil.copyfile(source, target)
+
+    # Some older builds bundled user-created custom_ skills with the built-ins.
+    # Copy them into writable state so editing and deletion work after upgrade.
+    builtin_root = SKILL_DIRS["coding"].resolve()
+    if builtin_root != canonical_skill_root and builtin_root.exists():
+        canonical_skill_root.mkdir(parents=True, exist_ok=True)
+        for source in builtin_root.glob("custom_*.md"):
+            target = canonical_skill_root / source.name
+            if not target.exists() and not target.with_suffix(".deleted").exists():
+                shutil.copyfile(source, target)
 
     legacy_tool_root = (AGENT_RUNTIME_ROOT / "agents" / "coding" / "tools").resolve()
     canonical_tool_root = TOOL_DIRS["coding"].resolve()
@@ -244,7 +265,7 @@ def _migrate_legacy_voice_assets() -> None:
     """Move voice assets created under the old src/agents/... root into agent_runtime."""
 
     legacy_root = (AGENT_RUNTIME_ROOT / "agents" / "voice").resolve()
-    canonical_skill_root = SKILL_DIRS["voice"].resolve()
+    canonical_skill_root = CUSTOM_SKILL_DIRS["voice"].resolve()
     canonical_tool_root = TOOL_DIRS["voice"].resolve()
 
     legacy_skill_root = legacy_root / "skills"
@@ -253,8 +274,16 @@ def _migrate_legacy_voice_assets() -> None:
         canonical_skill_root.mkdir(parents=True, exist_ok=True)
         for source in legacy_skill_root.glob("custom_*.md"):
             target = canonical_skill_root / source.name
-            if not target.exists():
-                os.replace(source, target)
+            if not target.exists() and not target.with_suffix(".deleted").exists():
+                shutil.copyfile(source, target)
+
+    builtin_root = SKILL_DIRS["voice"].resolve()
+    if builtin_root != canonical_skill_root and builtin_root.exists():
+        canonical_skill_root.mkdir(parents=True, exist_ok=True)
+        for source in builtin_root.glob("custom_*.md"):
+            target = canonical_skill_root / source.name
+            if not target.exists() and not target.with_suffix(".deleted").exists():
+                shutil.copyfile(source, target)
 
     legacy_tool_root = legacy_root / "tools"
 
@@ -575,6 +604,9 @@ class _GeneratedToolDraft(BaseModel):
 
 async def _generate_tool_draft(request: _ToolGenerateRequest) -> tuple[str, str, str]:
     tools = _executable_tool_catalog(request.tool_type)
+    # Tool modules can take longer to generate than skill playbooks. Stay within
+    # the desktop API bridge's five-minute request deadline.
+    generation_timeout = min(max(coding_settings.model_timeout_seconds, 240), 260)
 
     tool_catalog = "\n".join(
         (
@@ -625,6 +657,7 @@ Create a custom tool for the {request.tool_type} agent.
             model_name=config_settings.coding_model,
             max_tokens=3_200,
             temperature=0.1,
+            timeout_seconds=generation_timeout,
         )
         started_at = time.perf_counter()
         logger.info(
@@ -640,7 +673,7 @@ Create a custom tool for the {request.tool_type} agent.
                 model.ainvoke(
                     [('system', system_prompt), ('human', user_prompt)],
                 ),
-                timeout=float(coding_settings.model_timeout_seconds + 15),
+                timeout=float(generation_timeout + 15),
             )
         logger.info(
             "Admin tool draft model call completed in %.3fs; parsing response",
@@ -648,11 +681,13 @@ Create a custom tool for the {request.tool_type} agent.
         )
         draft = parser.parse(message_content_to_text(response.content))
     except asyncio.TimeoutError as exc:
+        logger.exception("Admin tool generation exceeded %ds", generation_timeout + 15)
         raise HTTPException(
             status_code=504,
-            detail='Tool generation timed out while waiting for the model/callback pipeline to finish.',
+            detail=f'Tool generation timed out after {generation_timeout + 15}s. See logs/runtime.log for details.',
         ) from exc
     except Exception as exc:
+        logger.exception("Admin tool generation failed")
         raise HTTPException(
             status_code=502,
             detail=f'Tool generation failed: {exc}',
@@ -887,13 +922,14 @@ async def draft_skill(request: SkillDraftRequest) -> SkillDraftResponse:
 
 @router.post("/skills", response_model=SkillSummary)
 def save_skill(request: SkillWriteRequest) -> SkillSummary:
+    _migrate_agent_assets(request.agent)
     if not request.name.startswith(CUSTOM_PREFIX):
         raise HTTPException(
             status_code=400,
             detail=f"User-created skills must start with '{CUSTOM_PREFIX}'.",
         )
 
-    skill_dir = _safe_agent_dir(SKILL_DIRS, request.agent)
+    skill_dir = _safe_agent_dir(CUSTOM_SKILL_DIRS, request.agent)
     path = (skill_dir / f"{request.name}.md").resolve()
     if path.parent != skill_dir:
         raise HTTPException(status_code=400, detail="Unsafe skill path.")
@@ -903,62 +939,120 @@ def save_skill(request: SkillWriteRequest) -> SkillSummary:
     normalized_content = _validate_skill_markdown(request.content)
     _validate_skill_tool_references(request.agent, normalized_content)
     _atomic_write(path, normalized_content)
-    skill = SkillRegistry(skill_dir).load().get(request.name)
+    path.with_suffix(".deleted").unlink(missing_ok=True)
+    skill = SkillRegistry(SKILL_DIRS[request.agent], skill_dir).load().get(request.name)
     
     return _skill_summary(request.agent, skill)
 
 
 @router.delete("/skills/{agent}/{name}")
 def delete_skill(agent: AgentKind, name: str) -> dict[str, bool]:
+    _migrate_agent_assets(agent)
     normalized = name.strip().lower().replace("-", "_")
     if not NAME_RE.fullmatch(normalized) or not normalized.startswith(CUSTOM_PREFIX):
         raise HTTPException(status_code=403, detail="Only custom_ skills may be deleted.")
 
-    skill_dir = _safe_agent_dir(SKILL_DIRS, agent)
+    skill_dir = _safe_agent_dir(CUSTOM_SKILL_DIRS, agent)
     path = (skill_dir / f"{normalized}.md").resolve()
     if path.parent != skill_dir:
         raise HTTPException(status_code=400, detail="Unsafe skill path.")
     if not path.exists():
         raise HTTPException(status_code=404, detail="Skill does not exist.")
     path.unlink()
+    # Hide a legacy packaged custom skill that remains in the read-only bundle.
+    if (SKILL_DIRS[agent] / path.name).exists():
+        _atomic_write(path.with_suffix(".deleted"), "")
     return {"deleted": True}
 
 
 @router.get("/tools", response_model=list[ToolSummary])
-def list_tools(agent: AgentKind = Query(...)) -> list[ToolSummary]:
-    _migrate_agent_assets(agent)
+def list_tools(
+    agent: AgentKind = Query(...),
+) -> list[ToolSummary]:
 
-    tool_root = _safe_agent_dir(TOOL_DIRS, agent)
-    pending_root = (tool_root / "custom_pending").resolve()
-    approved_root = (tool_root / "custom_approved").resolve()
+    builtin_root = TOOL_DIRS[agent].resolve()
+    custom_root = CUSTOM_TOOL_DIRS[agent].resolve()
+
+    pending_root = custom_root / "custom_pending"
+    approved_root = custom_root / "custom_approved"
+
+    # Only AppData is writable.
     pending_root.mkdir(parents=True, exist_ok=True)
     approved_root.mkdir(parents=True, exist_ok=True)
 
     tools: list[ToolSummary] = []
-    for path in sorted(tool_root.rglob("*.py")):
-        if "__pycache__" in path.parts or path.name == "__init__.py":
-            continue
 
-        if pending_root in path.parents:
-            status: Literal["builtin", "approved", "pending_review"] = "pending_review"
-        elif approved_root in path.parents:
-            status = "approved"
-        else:
-            status = "builtin"
+    # --------------------------------------------------
+    # Built-ins: READ ONLY
+    # --------------------------------------------------
+    if builtin_root.exists():
+        for path in sorted(builtin_root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
 
+            if path.name == "__init__.py":
+                continue
+
+            # Never classify custom folders packaged accidentally
+            # as built-ins.
+            if "custom_pending" in path.parts:
+                continue
+
+            if "custom_approved" in path.parts:
+                continue
+
+            tools.extend(
+                _scan_tool_file(
+                    agent=agent,
+                    tool_root=builtin_root,
+                    path=path,
+                    status="builtin",
+                )
+            )
+
+    # --------------------------------------------------
+    # Approved custom tools: AppData
+    # --------------------------------------------------
+    for path in sorted(approved_root.glob("*.py")):
         matches = _scan_tool_file(
             agent=agent,
-            tool_root=tool_root,
+            tool_root=custom_root,
             path=path,
-            status=status,
+            status="approved",
         )
 
-        if status != "builtin":
-            # One custom file is one tool. Helpers must be private (_helper).
-            matches = [item for item in matches if item.name == path.stem]
-        tools.extend(matches)
+        tools.extend(
+            item
+            for item in matches
+            if item.name == path.stem
+        )
 
-    return sorted(tools, key=lambda item: (item.status, item.name, item.module))
+    # --------------------------------------------------
+    # Pending custom tools: AppData
+    # --------------------------------------------------
+    for path in sorted(pending_root.glob("*.py")):
+        matches = _scan_tool_file(
+            agent=agent,
+            tool_root=custom_root,
+            path=path,
+            status="pending_review",
+        )
+
+        tools.extend(
+            item
+            for item in matches
+            if item.name == path.stem
+        )
+
+    return sorted(
+        tools,
+        key=lambda item: (
+            item.status,
+            item.name,
+            item.module,
+        ),
+    )
+
 
 
 def _custom_tool_path(agent: AgentKind, name: str, *, status: Literal["pending_review", "approved"]) -> Path:
@@ -966,7 +1060,7 @@ def _custom_tool_path(agent: AgentKind, name: str, *, status: Literal["pending_r
     if not NAME_RE.fullmatch(normalized):
         raise HTTPException(status_code=400, detail="Invalid tool name.")
     
-    tool_root = _safe_agent_dir(TOOL_DIRS, agent)
+    tool_root = _safe_agent_dir(CUSTOM_TOOL_DIRS, agent)
     directory_name = "custom_pending" if status == "pending_review" else "custom_approved"
     directory = (tool_root / directory_name).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -1013,7 +1107,7 @@ def review_tool(agent: AgentKind, name: str) -> ToolReviewResponse:
     source = path.read_text(encoding="utf-8")
     matches = _scan_tool_file(
         agent=agent,
-        tool_root=_safe_agent_dir(TOOL_DIRS, agent),
+        tool_root=_safe_agent_dir(CUSTOM_TOOL_DIRS, agent),
         path=path,
         status="pending_review",
     )
@@ -1140,7 +1234,7 @@ def approve_tool(agent: AgentKind, name: str, request: ToolApprovalRequest | Non
             item
             for item in _scan_tool_file(
                 agent=agent,
-                tool_root=_safe_agent_dir(TOOL_DIRS, agent),
+                tool_root=_safe_agent_dir(CUSTOM_TOOL_DIRS, agent),
                 path=approved_path,
                 status="approved",
             )
@@ -1243,7 +1337,7 @@ async def generate_tools(request: _ToolGenerateRequest) -> ToolReviewResponse:
 
 @router.post("/tools/quarantine", response_model=ToolSummary)
 def quarantine_tool(request: ToolQuarantineRequest) -> ToolSummary:
-    tool_root = _safe_agent_dir(TOOL_DIRS, request.agent)
+    tool_root = _safe_agent_dir(CUSTOM_TOOL_DIRS, request.agent)
     path = _custom_tool_path(request.agent, request.name, status="pending_review")
     approved_path = _custom_tool_path(request.agent, request.name, status="approved")
     if path.exists():

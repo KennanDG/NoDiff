@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import ast
 import importlib.util
@@ -12,8 +13,25 @@ from typing import Any, Callable, Iterable
 
 
 CODING_TOOLS_DIR = Path(__file__).resolve().parent / "tools"
-CUSTOM_PENDING_DIR = CODING_TOOLS_DIR / "custom_pending"
-CUSTOM_APPROVED_DIR = CODING_TOOLS_DIR / "custom_approved"
+def _runtime_data_root() -> Path:
+    configured = os.getenv("AGENT_RUNTIME_DATA_DIR", "").strip()
+
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    # Development/fallback path.
+    return Path.home() / ".nodiff" / "agent-runtime"
+
+
+CODING_CUSTOM_TOOLS_DIR = (
+    _runtime_data_root()
+    / "agents"
+    / "coding"
+    / "tools"
+)
+
+CUSTOM_PENDING_DIR = CODING_CUSTOM_TOOLS_DIR / "custom_pending"
+CUSTOM_APPROVED_DIR = CODING_CUSTOM_TOOLS_DIR / "custom_approved"
 
 
 STDLIB_IMPORT_ROOTS = frozenset(

@@ -104,6 +104,16 @@ def add_resource_tree(source_dir: Path, destination_dir: Path) -> None:
 
         relative_file = source_file.relative_to(source_dir)
 
+        if any(
+            part in {
+                "custom_pending",
+                "custom_approved",
+                "__pycache__",
+            }
+            for part in relative_file.parts
+        ):
+            continue
+
         # PyInstaller's destination is the containing directory, not the
         # destination filename.
         destination = destination_dir / relative_file.parent

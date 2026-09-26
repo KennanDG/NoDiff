@@ -644,7 +644,7 @@ export const SkillsPage = ({ apiBaseUrl, apiKey }: SkillsPageProps) => {
                 placeholder={
                   generationKind === "skill"
                     ? "Example: Create a skill for reviewing FastAPI endpoint changes, checking schemas, auth, error handling, and targeted tests."
-                    : "Example: Create a voice tool that summarizes repository context from the transcript before intake."
+                    : "Example: Create a tool that enhances the user prompt before passing it to the AI model"
                 }
                 className="mt-3 w-full resize-y rounded-md border border-line bg-surface px-3 py-2 text-xs leading-5 text-ink outline-none focus:border-accent/70"
               />
