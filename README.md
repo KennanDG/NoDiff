@@ -25,10 +25,107 @@ The patch pipeline does not generate binary assets. Protected paths, dependency 
 
 ### Prerequisites
 
-- Python **3.10–3.13** and [`uv`](https://docs.astral.sh/uv/); the Windows packaging workflow uses Python **3.13**.
-- Node.js and npm; the workflow uses Node.js **22**.
+NoDiff development is currently Windows-focused. Install the following tools before cloning the repository:
+
+- Python **3.10–3.13**; the Windows packaging workflow uses Python **3.13**.
+- [`uv`](https://docs.astral.sh/uv/) for Python dependency and virtual-environment management.
+- Node.js **22** and npm.
 - Git on `PATH` for repository operations.
 - Credentials for the model providers you choose. GitHub and SerpApi credentials are needed only for their respective integrations.
+
+#### 1. Install Python
+
+The recommended version for Windows development and packaging is **Python 3.13**.
+
+Using Windows Package Manager:
+
+```powershell
+winget install --exact --id Python.Python.3.13
+```
+
+Close and reopen PowerShell, then verify the installation:
+
+```powershell
+python --version
+```
+
+If `python` is not recognized but the Python launcher is available, check with:
+
+```powershell
+py -3.13 --version
+```
+
+You can also download Python from [python.org](https://www.python.org/downloads/). During the installer, enable **Add python.exe to PATH**.
+
+#### 2. Install uv
+
+Install `uv` from PowerShell with the official installer:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Close and reopen PowerShell, then verify:
+
+```powershell
+uv --version
+```
+
+See the [`uv` installation guide](https://docs.astral.sh/uv/getting-started/installation/) for alternative installation methods.
+
+#### 3. Install Node.js and npm
+
+NoDiff currently uses **Node.js 22**. npm is included with Node.js.
+
+The easiest way to install and manage the required Node version on Windows is with [nvm-windows](https://github.com/coreybutler/nvm-windows):
+
+```powershell
+winget install --exact --id CoreyButler.NVMforWindows
+```
+
+Close and reopen PowerShell, then install and activate Node.js 22:
+
+```powershell
+nvm install 22
+nvm use 22
+```
+
+Verify both Node.js and npm:
+
+```powershell
+node --version
+npm --version
+```
+
+Alternatively, install a Node.js 22 release directly from the [Node.js downloads page](https://nodejs.org/en/download).
+
+#### 4. Install Git
+
+Install Git for Windows:
+
+```powershell
+winget install --exact --id Git.Git
+```
+
+Close and reopen PowerShell, then verify:
+
+```powershell
+git --version
+```
+
+You can also download the installer from [git-scm.com](https://git-scm.com/download/win).
+
+#### 5. Verify all prerequisites
+
+Before setting up NoDiff, confirm that the required commands are available:
+
+```powershell
+python --version
+uv --version
+node --version
+npm --version
+git --version
+```
 
 For Windows development, run Node, Electron, `uv`, and Python in the same native Windows environment so repository paths match. Windows x64 is the configured packaged target.
 
